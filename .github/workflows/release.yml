@@ -1,0 +1,231 @@
+name: Compilar Stacklume para Mac
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-build-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Tests y artefacto ARM64
+    runs-on: xcode-27
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validar versión y notas
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^[[:space:]]*MARKETING_VERSION: "\(.*\)"/\1/p' project.yml | head -1)"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || {
+            echo "La versión de project.yml no es válida." >&2
+            exit 1
+          }
+          if [[ "$REF_TYPE" == tag ]]; then
+            [[ "$REF_NAME" == "v$VERSION" ]] || {
+              echo "La etiqueta no coincide con la versión $VERSION de project.yml." >&2
+              exit 1
+            }
+          fi
+          NOTES="docs/releases/$VERSION.md"
+          [[ -f "$NOTES" ]] || { echo "Faltan las notas $NOTES." >&2; exit 1; }
+          BUILD_NUMBER="$(sed -n 's/^[[:space:]]*CURRENT_PROJECT_VERSION: "\(.*\)"/\1/p' project.yml | head -1)"
+          [[ "$BUILD_NUMBER" =~ ^[0-9]{8}\.[0-9]{4}$ ]] || {
+            echo "El sello de compilación de project.yml no es válido." >&2
+            exit 1
+          }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Comprobar ARM64 y Xcode fijado
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == arm64 ]]
+          [[ "$(xcodebuild -version)" == $'Xcode 27.0\nBuild version 27A266a' ]]
+          xcodebuild -version
+          xcrun swift --version
+
+      - name: Instalar XcodeGen fijado y verificar checksum
+        run: |
+          set -euo pipefail
+          TOOLS="$RUNNER_TEMP/stacklume-tools"
+          mkdir -p "$TOOLS"
+          curl --fail --location --retry 3 \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip \
+            --output "$TOOLS/xcodegen.zip"
+          (
+            cd "$TOOLS"
+            echo '4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  xcodegen.zip' | shasum -a 256 -c -
+          )
+          ditto -x -k "$TOOLS/xcodegen.zip" "$TOOLS"
+          "$TOOLS/xcodegen/bin/xcodegen" --version
+          echo "$TOOLS/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Preparar uv y Python fijados
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          python-version: "3.12.15"
+          python-arch: aarch64
+          checksum: "a9c1b29002cf3c83f07fa9cd8a887a3be0107d90e23189721221e7257db8e3d6"
+          enable-cache: false
+          download-from-astral-mirror: false
+
+      - name: Preparar compilador Metal
+        run: |
+          set -euo pipefail
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun metal -v
+
+      - name: Preparar proyecto y dependencias bloqueadas
+        run: |
+          set -euo pipefail
+          ./scripts/bootstrap-project.sh
+          xcodebuild \
+            -resolvePackageDependencies \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -project Stacklume.xcodeproj \
+            -scheme Stacklume \
+            -skipMacroValidation
+
+      - name: Verificar runtime empaquetado sin descargar modelos
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          PYTHONNOUSERSITE: "1"
+        run: |
+          set -euo pipefail
+          RESOURCE_DIR="$GITHUB_WORKSPACE/App/Resources/EmbeddingRuntime"
+          EXPECTED_SHA="$(jq -r .sha256 "$RESOURCE_DIR/manifest.json")"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]]
+          (
+            cd "$RESOURCE_DIR"
+            echo "$EXPECTED_SHA  runtime.tar.gz" | shasum -a 256 -c -
+          )
+          mkdir -p "$RUNNER_TEMP/stacklume-runtime"
+          tar -xzf "$RESOURCE_DIR/runtime.tar.gz" -C "$RUNNER_TEMP/stacklume-runtime"
+          RUNTIME="$RUNNER_TEMP/stacklume-runtime/runtime"
+          export PYTHONHOME="$RUNTIME/python" PYTHONPATH="$RUNTIME"
+          PYTHON="$RUNTIME/python/bin/python3.12"
+          "$PYTHON" scripts/embeddinggemma/runtime_boundary_tests.py
+          "$PYTHON" scripts/embeddinggemma/runtime_memory_tests.py --runtime "$RUNTIME"
+          "$PYTHON" scripts/embeddinggemma/runtime_shutdown_tests.py --runtime "$RUNTIME"
+
+      - name: Preparar activos lingüísticos del validador
+        run: |
+          set -euo pipefail
+          xcrun swift -swift-version 6 -strict-concurrency=complete scripts/testing/prepare-linguistic-assets.swift --download-models
+          xcrun swift -swift-version 6 -strict-concurrency=complete scripts/testing/prepare-linguistic-assets.swift
+
+      - name: Ejecutar tests Swift
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project Stacklume.xcodeproj \
+            -scheme Stacklume \
+            -destination 'platform=macOS,arch=arm64' \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -skipMacroValidation \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM=
+
+      - name: Archivar edición gratuita ARM64 con firma ad hoc
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project Stacklume.xcodeproj \
+            -scheme Stacklume \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -archivePath "$RUNNER_TEMP/Stacklume.xcarchive" \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -skipMacroValidation \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM= \
+            PROVISIONING_PROFILE_SPECIFIER=
+
+      - name: Verificar firmas y arquitectura del artefacto
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/Stacklume.xcarchive/Products/Applications/Stacklume.app"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          ./scripts/release/verify-runtime-signing.sh "$APP"
+          for BUNDLE in "$APP" "$APP/Contents/PlugIns/ShareExtension.appex" "$APP/Contents/PlugIns/StacklumeWidget.appex"; do
+            BINARY_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$BUNDLE/Contents/Info.plist")"
+            [[ "$(lipo -archs "$BUNDLE/Contents/MacOS/$BINARY_NAME")" == arm64 ]]
+            codesign -d --verbose=4 "$BUNDLE" 2>&1 | grep -Fx 'Signature=adhoc'
+            ENTITLEMENTS="$RUNNER_TEMP/stacklume-entitlements.plist"
+            codesign -d --entitlements :- "$BUNDLE" > "$ENTITLEMENTS" 2>/dev/null
+            GET_TASK_ALLOW="$(plutil -extract 'com\.apple\.security\.get-task-allow' raw -o - "$ENTITLEMENTS" 2>/dev/null || true)"
+            [[ "$GET_TASK_ALLOW" != true ]]
+          done
+          for KEY in StacklumeCommercialBuild StacklumeLicenseOrganizationID StacklumeLicenseBenefitID; do
+            if plutil -type "$KEY" "$APP/Contents/Info.plist" >/dev/null 2>&1; then
+              echo "La app gratuita contiene metadata de licencias." >&2
+              exit 1
+            fi
+          done
+
+      - name: Crear ZIP de CI y checksum
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/Stacklume.xcarchive/Products/Applications/Stacklume.app"
+          ARTIFACT_DIR="$RUNNER_TEMP/stacklume-artifact"
+          ZIP_NAME="Stacklume-$VERSION-ci-arm64.zip"
+          mkdir -p "$ARTIFACT_DIR"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARTIFACT_DIR/$ZIP_NAME"
+          (
+            cd "$ARTIFACT_DIR"
+            shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256"
+            shasum -a 256 -c "$ZIP_NAME.sha256"
+          )
+          mkdir -p "$RUNNER_TEMP/stacklume-zip-check"
+          ditto -x -k "$ARTIFACT_DIR/$ZIP_NAME" "$RUNNER_TEMP/stacklume-zip-check"
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/stacklume-zip-check/Stacklume.app"
+          ./scripts/release/verify-runtime-signing.sh "$RUNNER_TEMP/stacklume-zip-check/Stacklume.app"
+          {
+            echo "Artefacto de CI; no constituye una release oficial ni un appcast firmado."
+            echo "Versión: $VERSION"
+            echo "Revisión: $GITHUB_SHA"
+            echo "Ejecución: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            xcodebuild -version
+            xcrun swift --version
+            xcodegen --version
+            uv --version
+            shasum -a 256 project.yml Config/Package.resolved Runtime/EmbeddingGemma/uv.lock
+          } > "$ARTIFACT_DIR/BUILD-INFO.txt"
+
+      - name: Guardar artefacto de compilación
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Stacklume-${{ steps.version.outputs.version }}-ci-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stacklume-artifact/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

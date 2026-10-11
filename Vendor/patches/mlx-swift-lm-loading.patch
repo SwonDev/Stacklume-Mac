@@ -1,0 +1,381 @@
+--- a/Libraries/MLXLLM/LLMModelFactory.swift
++++ b/Libraries/MLXLLM/LLMModelFactory.swift
+@@ -670,6 +670,7 @@
+         configuration: ResolvedModelConfiguration,
+         tokenizerLoader: any TokenizerLoader
+     ) async throws -> ModelContext {
++        try ModelLoadingScope.current?.checkpoint(stage: "config-started")
+         let modelDirectory = configuration.modelDirectory
+ 
+         // Load config.json once and decode for both base config and model-specific config
+@@ -689,6 +690,7 @@
+                 configurationURL.lastPathComponent, configuration.name, error)
+         }
+ 
++        try ModelLoadingScope.current?.checkpoint(stage: "config-ready")
+         let model: LanguageModel
+         do {
+             model = try await typeRegistry.createModel(
+@@ -698,6 +700,7 @@
+                 configurationURL.lastPathComponent, configuration.name, error)
+         }
+ 
++        try ModelLoadingScope.current?.checkpoint(stage: "architecture-ready")
+         // Load EOS token IDs from config.json, with optional override from generation_config.json
+         var eosTokenIds = baseConfig.effectiveEOSTokenIds
+         let generationConfigURL = modelDirectory.appending(component: "generation_config.json")
+@@ -735,13 +738,21 @@
+         }
+ 
+         // Load tokenizer and weights in parallel
+-        async let tokenizerTask = tokenizerLoader.load(
+-            from: configuration.tokenizerDirectory)
+-
+-        try await loadWeights(
+-            modelDirectory: modelDirectory, model: model,
+-            perLayerQuantization: baseConfig.perLayerQuantization,
+-            weightFileSelection: configuration.weightFileSelection)
++        let tokenizerAttempt = ModelLoadingScope.current.map {
++            ModelLoadingTokenizerAttempt(policy: $0)
++        }
++        async let tokenizerTask = loadTokenizerWithPolicy(tokenizerLoader,
++            from: configuration.tokenizerDirectory, attempt: tokenizerAttempt)
++
++        do {
++            try await loadWeights(
++                modelDirectory: modelDirectory, model: model,
++                perLayerQuantization: baseConfig.perLayerQuantization,
++                weightFileSelection: configuration.weightFileSelection)
++        } catch {
++            tokenizerAttempt?.parentFailed(error)
++            throw error
++        }
+ 
+         let tokenizer = try await tokenizerTask
+ 
+--- a/Libraries/MLXLMCommon/Load.swift
++++ b/Libraries/MLXLMCommon/Load.swift
+@@ -127,6 +127,12 @@
+         lock.lock()
+         defer { lock.unlock() }
+         if firstError == nil { firstError = error }
++    }
++
++    func checkError() throws {
++        lock.lock()
++        defer { lock.unlock() }
++        if let firstError { throw firstError }
+     }
+ 
+     /// Weights merged in file order (a later file overwrites a duplicate name, matching the
+@@ -218,6 +224,86 @@
+     return try state.result()
+ }
+ 
++
++private func loadWeightArrays(urls: [URL], loadingPolicy: ModelLoadingPolicy?) throws -> (
++    weights: [String: MLXArray], metadata: [String: String]
++) {
++    guard let loadingPolicy else { return try loadWeightArrays(urls: urls) }
++    struct WorkItem {
++        let file: Int
++        let url: URL
++        /// tensors this item evaluates; nil evaluates the whole file
++        let names: [String]?
++    }
++
++    let items: [WorkItem] = {
++        var spansPerFile = [[SafetensorSpan]?]()
++        var totalBytes: Int64 = 0
++        for url in urls {
++            let spans = try? safetensorSpansInFileOrder(url: url)
++            spansPerFile.append(spans)
++            totalBytes += spans?.reduce(0) { $0 + $1.byteCount } ?? 0
++        }
++
++        let concurrency = weightLoadConcurrency()
++        let officialGroupBytes = max(minimumBytesPerLoadGroup, totalBytes / Int64(concurrency))
++        let groupBytes = min(officialGroupBytes, loadingPolicy.targetBytesPerGroup)
++        var items = [WorkItem]()
++        for (file, url) in urls.enumerated() {
++            if let spans = spansPerFile[file], !spans.isEmpty {
++                let bytes = spans.reduce(0) { $0 + $1.byteCount }
++                let groupCount = max(1, Int(bytes / groupBytes))
++                for range in contiguousLoadGroups(
++                    byteCounts: spans.map(\.byteCount), groupCount: groupCount)
++                {
++                    items.append(
++                        WorkItem(file: file, url: url, names: spans[range].map(\.name)))
++                }
++            } else {
++                items.append(WorkItem(file: file, url: url, names: nil))
++            }
++        }
++        return items
++    }()
++
++    let state = ConcurrentLoadState(fileCount: urls.count)
++    let maximumInFlight = loadingPolicy.maximumConcurrentGroups
++    for start in stride(from: 0, to: items.count, by: maximumInFlight) {
++        let end = min(start + maximumInFlight, items.count)
++        DispatchQueue.concurrentPerform(iterations: end - start) { offset in
++            let index = start + offset
++            let item = items[index]
++            do {
++                try state.checkError()
++                try loadingPolicy.checkpoint(stage: "group-started", groupIndex: index, groupCount: items.count)
++                // Explicitly the CPU stream: `Load` has no GPU implementation and the arrays
++                // land in unified memory either way. The concurrency comes from evaluating
++                // disjoint groups from many threads, not from the stream itself.
++                let (all, metadata) = try loadArraysAndMetadata(url: item.url, stream: .cpu)
++
++                var selected = [String: MLXArray]()
++                if let names = item.names {
++                    for name in names {
++                        if let array = all[name] { selected[name] = array }
++                    }
++                } else {
++                    selected = all
++                }
++
++                // force this range's I/O here, on this stream, in file-offset order
++                if !selected.isEmpty { eval(Array(selected.values)) }
++                try loadingPolicy.checkpoint(stage: "group-ready", groupIndex: index, groupCount: items.count)
++                state.merge(file: item.file, weights: selected, metadata: metadata)
++            } catch {
++                if error is CancellationError { loadingPolicy.cancel() }
++                state.record(error: error)
++            }
++        }
++        try state.checkError()
++    }
++    return try state.result()
++}
++
+ private struct SafetensorsIndex: Decodable {
+     let weightMap: [String: String]
+ 
+@@ -369,8 +455,11 @@
+     modelDirectory: URL, model: BaseLanguageModel,
+     quantization: BaseConfiguration.Quantization? = nil,
+     perLayerQuantization: BaseConfiguration.PerLayerQuantization? = nil,
+-    weightFileSelection: WeightFileSelection = .automatic
++    weightFileSelection: WeightFileSelection = .automatic,
++    loadingPolicy: ModelLoadingPolicy? = nil
+ ) throws {
++    let loadingPolicy = loadingPolicy ?? ModelLoadingScope.current
++    try loadingPolicy?.checkpoint(stage: "weights-selecting")
+     // load the weights and collect metadata from the first safetensor file
+     var weights = [String: MLXArray]()
+     var metadata = [String: String]()
+@@ -379,12 +468,16 @@
+         in: modelDirectory,
+         selection: weightFileSelection,
+         additionalFiles: additionalFiles ?? [])
+-    (weights, metadata) = try loadWeightArrays(urls: weightURLs)
++    (weights, metadata) = try loadWeightArrays(urls: weightURLs, loadingPolicy: loadingPolicy)
++    try loadingPolicy?.checkpoint(stage: "weights-ready")
+ 
+     // per-model cleanup (models can inspect metadata to customize behavior)
++    try loadingPolicy?.checkpoint(stage: "sanitize-started")
+     weights = model.sanitize(weights: weights, metadata: metadata)
++    try loadingPolicy?.checkpoint(stage: "sanitized")
+ 
+     // quantize if needed
++    try loadingPolicy?.checkpoint(stage: "quantization-started")
+     if quantization != nil || perLayerQuantization != nil {
+         quantize(model: model) { path, module in
+             if weights["\(path).scales"] != nil {
+@@ -399,13 +492,18 @@
+         }
+     }
+ 
++    try loadingPolicy?.checkpoint(stage: "quantized")
+     // apply the loaded weights
++    try loadingPolicy?.checkpoint(stage: "verification-started")
+     let parameters = ModuleParameters.unflattened(weights)
+     try model.update(parameters: parameters, verify: [.all])
++    try loadingPolicy?.checkpoint(stage: "verified")
+ 
+     // Build derived inference-only state and realize the model while the loader
+     // still has exclusive access. Forward passes must remain read-only.
++    try loadingPolicy?.checkpoint(stage: "materialization-started")
+     materializeModelForInference(model)
++    try loadingPolicy?.checkpoint(stage: "materialization-ready")
+ }
+ 
+ /// Async variant of
+@@ -419,19 +517,21 @@
+     modelDirectory: URL, model: BaseLanguageModel,
+     quantization: BaseConfiguration.Quantization? = nil,
+     perLayerQuantization: BaseConfiguration.PerLayerQuantization? = nil,
+-    weightFileSelection: WeightFileSelection = .automatic
++    weightFileSelection: WeightFileSelection = .automatic,
++    loadingPolicy: ModelLoadingPolicy? = nil
+ ) async throws {
++    let loadingPolicy = loadingPolicy ?? ModelLoadingScope.current
+     let model = SendableBox(model)
+     try await withCheckedThrowingContinuation {
+         (continuation: CheckedContinuation<Void, any Error>) in
+-        DispatchQueue.global(qos: .userInitiated).async {
++        DispatchQueue.global(qos: loadingPolicy == nil ? .userInitiated : .utility).async {
+             continuation.resume(
+                 with: Result {
+                     try loadWeights(
+                         modelDirectory: modelDirectory, model: model.consume(),
+                         quantization: quantization,
+                         perLayerQuantization: perLayerQuantization,
+-                        weightFileSelection: weightFileSelection)
++                        weightFileSelection: weightFileSelection, loadingPolicy: loadingPolicy)
+                 })
+         }
+     }
+--- a/Libraries/MLXLMCommon/ModelFactory.swift
++++ b/Libraries/MLXLMCommon/ModelFactory.swift
+@@ -424,6 +424,7 @@
+             let model = try await loader(factory)
+             return model
+         } catch {
++            if ModelLoadingScope.current?.isCancelled == true { throw error }
+             lastError = error
+         }
+     }
+--- /dev/null
++++ b/Libraries/MLXLMCommon/ModelLoadingPolicy.swift
+@@ -0,0 +1,136 @@
++import Foundation
++
++public struct ModelLoadingEvent: Sendable {
++    public let sequence: Int
++    public let stage: String
++    public let groupIndex: Int?
++    public let groupCount: Int?
++}
++
++public enum ModelLoadingPolicyError: Error {
++    case invalidBounds
++}
++
++/// Una instancia por intento; conserva la primera causa terminal hasta que termina.
++/// El lock protege causa y secuencia; guarda y observador se ejecutan fuera de él.
++public final class ModelLoadingPolicy: @unchecked Sendable {
++    public let maximumConcurrentGroups: Int
++    public let targetBytesPerGroup: Int64
++    private let lock = NSLock()
++    private var terminalCause: (any Error)?
++    private var sequence = 0
++    private let guardOperation: @Sendable () throws -> Void
++    private let observer: @Sendable (ModelLoadingEvent) -> Void
++
++    public init(maximumConcurrentGroups: Int, targetBytesPerGroup: Int64,
++                guardOperation: @escaping @Sendable () throws -> Void,
++                observer: @escaping @Sendable (ModelLoadingEvent) -> Void) throws {
++        guard (1...16).contains(maximumConcurrentGroups),
++              targetBytesPerGroup >= 256 * 1024 * 1024 else {
++            throw ModelLoadingPolicyError.invalidBounds
++        }
++        self.maximumConcurrentGroups = maximumConcurrentGroups
++        self.targetBytesPerGroup = targetBytesPerGroup
++        self.guardOperation = guardOperation
++        self.observer = observer
++    }
++
++    public var isCancelled: Bool { lock.withLock { terminalCause != nil } }
++
++    public func cancel() { _ = latch(CancellationError()) }
++
++    fileprivate func latch(_ cause: any Error) -> any Error {
++        lock.withLock {
++            if let terminalCause { return terminalCause }
++            terminalCause = cause
++            return cause
++        }
++    }
++
++    private func checkStopped() throws {
++        if let cause = lock.withLock({ terminalCause }) { throw cause }
++    }
++
++    package func checkpoint(stage: String, groupIndex: Int? = nil,
++                            groupCount: Int? = nil) throws {
++        try checkStopped()
++        do { try guardOperation() } catch { throw latch(error) }
++        let event = try lock.withLock { () throws -> ModelLoadingEvent in
++            if let terminalCause { throw terminalCause }
++            sequence += 1
++            return .init(sequence: sequence, stage: stage,
++                         groupIndex: groupIndex, groupCount: groupCount)
++        }
++        observer(event)
++        try checkStopped()
++    }
++
++    public static func withPolicy<R: Sendable>(
++        _ policy: ModelLoadingPolicy,
++        operation: @Sendable () async throws -> R
++    ) async throws -> R {
++        try await withTaskCancellationHandler {
++            try await ModelLoadingScope.$current.withValue(policy) {
++                do {
++                    try policy.checkpoint(stage: "load-started")
++                    let result = try await operation()
++                    try policy.checkpoint(stage: "load-returned")
++                    return result
++                } catch {
++                    if error is CancellationError { _ = policy.latch(error) }
++                    try policy.checkStopped()
++                    throw error
++                }
++            }
++        } onCancel: {
++            policy.cancel()
++        }
++    }
++}
++
++package enum ModelLoadingScope {
++    @TaskLocal package static var current: ModelLoadingPolicy?
++}
++
++/// Una pareja concreta tokenizer/pesos; solo el padre marca su fallo ordinario
++/// antes de salir del scope async let y empezar el drenaje estructurado.
++package final class ModelLoadingTokenizerAttempt: @unchecked Sendable {
++    private let lock = NSLock()
++    private let policy: ModelLoadingPolicy
++    private var drainingOrdinaryParentFailure = false
++
++    package init(policy: ModelLoadingPolicy) { self.policy = policy }
++
++    package func parentFailed(_ error: any Error) {
++        guard !(error is CancellationError), !policy.isCancelled else { return }
++        lock.withLock { drainingOrdinaryParentFailure = true }
++    }
++
++    fileprivate func permitsCleanup(for current: ModelLoadingPolicy) -> Bool {
++        current === policy && lock.withLock { drainingOrdinaryParentFailure }
++    }
++}
++
++package func loadTokenizerWithPolicy(
++    _ loader: any TokenizerLoader, from directory: URL,
++    attempt: ModelLoadingTokenizerAttempt? = nil
++) async throws -> any Tokenizer {
++    let policy = ModelLoadingScope.current
++    do {
++        try policy?.checkpoint(stage: "tokenizer-started")
++        let tokenizer = try await loader.load(from: directory)
++        try policy?.checkpoint(stage: "tokenizer-ready")
++        return tokenizer
++    } catch let error as CancellationError {
++        if let policy {
++            // El flag de la hija no demuestra por sí solo limpieza del padre:
++            // también puede haber sido cancelada por su propio tokenizer.
++            if Task.isCancelled, !policy.isCancelled,
++                attempt?.permitsCleanup(for: policy) == true {
++                throw error
++            }
++            throw policy.latch(error)
++        }
++        throw error
++    }
++}

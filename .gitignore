@@ -1,0 +1,54 @@
+# Xcode / proyecto generado por XcodeGen
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+build/
+*.xcuserstate
+
+# SwiftPM
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Herramientas MCP / agentes
+.xcodebuildmcp/
+.playwright-mcp/
+
+# Misc
+*.log
+
+# Backups personales importados (datos privados, no versionar)
+docs/Importados de Windows/
+
+# Capturas y auditorías visuales locales de la landing (no forman parte de la app)
+amicro-long-arc.png
+dock-cool-home-snapshot.md
+dock-cool-home-top.png
+stacklume-hero-light-validation.png
+stacklume-hero-validation.png
+stacklume-home-desktop-top.png
+stacklume-mobile-3d-production.png
+stacklume-reference-home-hero.png
+supaste-after-scroll.jpg
+supaste-home-snapshot.md
+supaste-home-top.png
+supaste-visual-audit.json
+trae-effect-before.png
+trae-effect-hover.png
+
+# Runtime generado de búsqueda (se empaqueta en bootstrap/CI, no en Git)
+App/Resources/EmbeddingRuntime/runtime.tar.gz*
+App/Resources/EmbeddingRuntime/manifest.json
+
+# Entornos y cachés del runtime
+Runtime/EmbeddingGemma/.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.key
+*.p12
+*.p8

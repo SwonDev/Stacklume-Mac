@@ -1,0 +1,71 @@
+{
+  "sourceLanguage" : "es",
+  "version" : "1.0",
+  "strings" : {
+    "Vídeo" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Video" } } } },
+    "Música" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Music" } } } },
+    "Juego" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Game" } } } },
+    "Código" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Code" } } } },
+    "Artículo" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Article" } } } },
+    "Social" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Social" } } } },
+    "Diseño" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Design" } } } },
+    "Documento" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Document" } } } },
+    "Comercio" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Commerce" } } } },
+    "Sitio web" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Website" } } } },
+
+    "Pendiente" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Pending" } } } },
+    "Leyendo" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Reading" } } } },
+    "Leído" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Read" } } } },
+
+    "Lista" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "List" } } } },
+
+    "Correcto" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "OK" } } } },
+    "Redirección" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Redirect" } } } },
+    "Roto" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Broken" } } } },
+    "Tiempo agotado" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Timed out" } } } },
+
+    "Favoritos" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Favorites" } } } },
+    "Recientes" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Recent" } } } },
+    "Categoría" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Category" } } } },
+    "Nube de etiquetas" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Tag cloud" } } } },
+    "Cola de lectura" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Reading queue" } } } },
+    "Nota" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Note" } } } },
+    "Generador de contraseñas" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Password generator" } } } },
+    "Código QR" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "QR code" } } } },
+
+    "Tus enlaces marcados como favoritos." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Your links marked as favorites." } } } },
+    "Los últimos enlaces que has guardado." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The latest links you’ve saved." } } } },
+    "Enlaces de una categoría concreta." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Links from a specific category." } } } },
+    "Tus etiquetas para filtrar rápido." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Your tags for quick filtering." } } } },
+    "Enlaces pendientes de leer." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Links pending to read." } } } },
+    "Una nota rápida en el dashboard." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "A quick note on the dashboard." } } } },
+    "Genera contraseñas seguras al instante." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Generate secure passwords instantly." } } } },
+    "Crea un QR a partir de cualquier enlace." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Create a QR code from any link." } } } },
+
+    "Pequeño" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Small" } } } },
+    "Mediano" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Medium" } } } },
+    "Grande" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Large" } } } },
+    "Ancho" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Wide" } } } },
+    "Extra grande" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Extra Large" } } } },
+    "Destacados de la semana" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "This week’s highlights" } } } },
+    "Estadísticas" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Statistics" } } } },
+    "Los enlaces que guardaste esta semana." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Links you saved this week." } } } },
+    "Resumen: total, sin leer y favoritos." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Summary: total, unread and favorites." } } } },
+    "Accesos rápidos" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Quick actions" } } } },
+    "Atajos para añadir, buscar y ver favoritos." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Shortcuts to add, search and view favorites." } } } },
+
+    "Enlaces" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Links" } } } },
+    "Productividad" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Productivity" } } } },
+    "Utilidades" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Utilities" } } } },
+
+    "La URL contiene" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "URL contains" } } } },
+    "El título contiene" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Title contains" } } } },
+    "La plataforma es" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Platform is" } } } },
+    "El dominio contiene" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Domain contains" } } } },
+    "Asignar categoría" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Set category" } } } },
+    "Añadir etiqueta" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Add tag" } } } },
+
+    "Compacta" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Compact" } } } },
+    "Cómoda" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Comfortable" } } } }
+  }
+}

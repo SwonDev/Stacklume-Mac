@@ -1,0 +1,15 @@
+{
+  "upstream": {
+    "url": "https://github.com/ml-explore/mlx-swift-lm",
+    "version": "3.32.3",
+    "revision": "3b339ad6e3b3f44c8121ecff5131c7fd55e075e6"
+  },
+  "files": 655,
+  "sourceManifestSHA256": "45253fdac8d73c2a9b7be66fd89bf2dea0159f9518e7512cb912b718fac3b85f",
+  "patch": "patches/mlx-swift-lm-loading.patch",
+  "patchSHA256": "f3e4a937c63059add08e9739e68e6847ee960bf885d498e7939618a3eeab6284",
+  "licensePreserved": true,
+  "loadPolicyOptInDefault": false,
+  "modelChanged": false,
+  "MLXRevision": "19601207e9a0de51e03ee6ec0c3c5f3784275075"
+}

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+	<!--
+	  La distribución directa usa firma ad hoc: la app y Sparkle no pueden compartir
+	  un Team ID de Apple. Hardened Runtime mantiene activa la validación del resto de
+	  protecciones, pero esta excepción permite cargar el framework embebido firmado.
+	  Debe eliminarse cuando exista una firma Developer ID común.
+	-->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

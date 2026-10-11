@@ -1,0 +1,265 @@
+name: Stacklume
+options:
+  bundleIdPrefix: com.swondev.stacklume
+  deploymentTarget:
+    macOS: "26.0"
+  developmentLanguage: es
+  createIntermediateGroups: true
+  knownRegions:
+    - es
+    - en
+    - Base
+
+settings:
+  base:
+    SWIFT_VERSION: "6.3"
+    # Versionado: MARKETING_VERSION (semántica, sube por tanda de features) +
+    # CURRENT_PROJECT_VERSION (sello AAAAMMDD.HHMM del build, lo estampa el comando de compilación
+    # con `sed` antes de `xcodegen generate`). Así «Acerca de» muestra siempre la build más reciente.
+    MARKETING_VERSION: "1.62.1"
+    CURRENT_PROJECT_VERSION: "20261011.2027"
+    SWIFT_STRICT_CONCURRENCY: complete
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_EMIT_LOC_STRINGS: "YES"
+    LOCALIZATION_PREFERS_STRING_CATALOGS: "YES"
+    # Canal binario público y separado del código fuente. Sparkle exige además
+    # la firma EdDSA declarada en Info.plist antes de aceptar una actualización.
+    STACKLUME_UPDATE_FEED_URL: "https://github.com/SwonDev/Stacklume-Mac-Releases/releases/latest/download/appcast.xml"
+
+packages:
+  StacklumeCore:
+    path: Packages/StacklumeCore
+  StacklumeDesignSystem:
+    path: Packages/StacklumeDesignSystem
+  StacklumePersistence:
+    path: Packages/StacklumePersistence
+  StacklumeMetadata:
+    path: Packages/StacklumeMetadata
+  StacklumeAI:
+    path: Packages/StacklumeAI
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: "2.10.0"
+  mlx-swift-lm:
+    path: Vendor/mlx-swift-lm
+  swift-huggingface:
+    url: https://github.com/huggingface/swift-huggingface
+    from: "0.13.0"
+  swift-transformers:
+    url: https://github.com/huggingface/swift-transformers
+    from: "1.3.5"
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    exactVersion: "0.9.20"
+  swift-markdown:
+    url: https://github.com/swiftlang/swift-markdown.git
+    exactVersion: "0.9.0"
+  swift-cmark:
+    url: https://github.com/swiftlang/swift-cmark.git
+    exactVersion: "0.9.0"
+
+targets:
+  Stacklume:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+        excludes:
+          - Resources/EmbeddingRuntime
+          - Features/ModelCatalog/Evidence
+          - Features/ModelCatalog/CAPABILITIES.md
+      - path: App/Resources/EmbeddingRuntime
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: StacklumeCore
+      - package: StacklumeDesignSystem
+      - package: StacklumePersistence
+      - package: StacklumeMetadata
+      - package: StacklumeAI
+      - package: Sparkle
+      - package: mlx-swift-lm
+        product: MLXLLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-huggingface
+        product: HuggingFace
+      - package: swift-transformers
+        product: Tokenizers
+      - package: ZIPFoundation
+      - package: swift-markdown
+        product: Markdown
+      - package: swift-cmark
+        product: cmark-gfm
+      - target: StacklumeWidget
+      - target: ShareExtension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.swondev.stacklume
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Info.plist propio: necesario para declarar CFBundleURLTypes (esquema
+        # stacklume://), que no admite INFOPLIST_KEY_*. Conserva las claves que
+        # antes se generaban por INFOPLIST_KEY_ (categoría, copyright).
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: App/Resources/Info.plist
+        # Distribución directa SIN App Sandbox: la app gestiona su store local y,
+        # más adelante, lee el modelo en ~/.lmstudio. El sandbox se mantiene
+        # desactivado (no se añade com.apple.security.app-sandbox).
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: App/Resources/Stacklume.entitlements
+        COMBINE_HIDPI_IMAGES: YES
+      configs:
+        Release:
+          # Swift 6.3/Xcode 26.6 agota los bitfields internos de SIL al optimizar este
+          # target grande como un único módulo. Conserva `-O`, pero compila por archivo.
+          SWIFT_COMPILATION_MODE: singlefile
+          # Sin Developer ID, la app y Sparkle se firman ad hoc y no comparten Team ID.
+          # Esta excepción queda limitada al host Release de distribución directa;
+          # Hardened Runtime sigue activo y debe retirarse al adoptar Developer ID.
+          CODE_SIGN_ENTITLEMENTS: App/Resources/StacklumeDirectDistribution.entitlements
+          # La firma ad hoc de Release no debe heredar `get-task-allow`.
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+
+  StacklumeWidget:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: StacklumeWidget
+      - path: App/Shared/WidgetSnapshot.swift
+      - path: App/Shared/BoundedFileReader.swift
+      - path: App/Shared/PrivateFileIO.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.swondev.stacklume.StacklumeWidget
+        INFOPLIST_FILE: StacklumeWidget/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "6.3"
+        SWIFT_STRICT_CONCURRENCY: complete
+      configs:
+        Release:
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+
+  ShareExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: ShareExtension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.swondev.stacklume.ShareExtension
+        INFOPLIST_FILE: ShareExtension/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "6.3"
+        SWIFT_STRICT_CONCURRENCY: complete
+      configs:
+        Release:
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+
+  # Tests de lógica aislada (sin host de app → NO compila la app ni MLX): rápidos y
+  # fiables. Cubren la lógica crítica determinista. Los ficheros app autocontenidos
+  # se compilan dentro del módulo de tests para poder
+  # probarlos sin arrastrar el target de la app (red de seguridad anti-regresiones).
+  StacklumeTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: StacklumeTests
+      - path: App/Shared/CanonicalURL.swift
+      - path: App/Shared/OpenBrowserTab.swift
+      - path: App/Shared/BackupArchiveInspector.swift
+      - path: App/Shared/DocumentTextExtractor.swift
+      - path: App/Shared/DocumentTextSanitizer.swift
+      - path: App/Shared/BoundedFileReader.swift
+      - path: App/Shared/ImportSafety.swift
+      - path: App/Shared/MacMetadataService.swift
+      - path: App/Shared/MacMetadataURL.swift
+      - path: App/Shared/MacSpecialEnrichers.swift
+      - path: App/Shared/MacOfflineCopyService.swift
+      - path: App/Shared/PrivateFileIO.swift
+      - path: App/Shared/XMLInputSafety.swift
+      - path: App/Shared/CSVFieldEncoder.swift
+      - path: App/Shared/ReminderDateParser.swift
+      - path: App/Shared/EPUBDocument.swift
+      - path: App/Shared/DroppedContentImporter.swift
+      - path: App/Shared/StacklumeRoute.swift
+      - path: App/Shared/StacklumeAutomationPolicy.swift
+      - path: App/Shared/AssistantActionPolicy.swift
+      - path: App/Shared/AssistantResponseGate.swift
+      - path: App/Shared/AssistantResponsePresentation.swift
+      - path: App/Shared/AssistantResearch.swift
+      - path: App/Shared/AssistantSessionPolicy.swift
+      - path: App/Features/AI/LocalLLM/LocalModelLoadAttempt.swift
+      - path: App/Shared/IngestOrganizationGate.swift
+      - path: App/Shared/ModelCatalogModels.swift
+      - path: App/Shared/ModelCatalogRequest.swift
+      - path: App/Shared/ModelCatalogDecoding.swift
+      - path: App/Shared/ModelCatalogTemporaryMedia.swift
+      - path: App/Shared/ModelCatalogFavorites.swift
+      - path: App/Shared/ModelCatalogMetadata.swift
+      - path: App/Shared/ModelCatalogPresentation.swift
+      - path: App/Shared/ModelCatalogCredentialContinuity.swift
+      - path: App/Features/ModelCatalog/ModelCatalogDownload.swift
+      - path: App/Shared/XPostAuthorPolicy.swift
+      - path: App/Shared/AssistantConversationStore.swift
+      - path: App/Shared/LibraryResetIntent.swift
+      - path: App/Shared/AssistantWebSearch.swift
+      - path: App/Shared/SecureNetworkAccess.swift
+      - path: App/Shared/HTTPRateLimitState.swift
+      - path: App/Shared/PersistenceLog.swift
+      - path: App/Shared/PackageReleaseFeed.swift
+      - path: App/Shared/ProjectWorkspaceStore.swift
+      - path: App/Shared/LibraryViewPrefs.swift
+      - path: App/Shared/SearchQuery.swift
+      - path: App/Shared/MultimodalSearchResult.swift
+      - path: App/Shared/HDImage.swift
+      - path: App/Shared/CoverRecoveryPolicy.swift
+      - path: App/Shared/CoverRecoveryProvenanceStore.swift
+      - path: App/Shared/CollectionMerger.swift
+      - path: App/Shared/ConnectionMapLayout.swift
+      - path: App/Shared/XPostPolicy.swift
+      - path: App/Shared/XPostDraftStore.swift
+      - path: App/Shared/StacklumeLaunchPolicy.swift
+      - path: App/Shared/CollectionHeaderLayoutPolicy.swift
+      - path: App/Shared/RootWindowLayoutMetrics.swift
+      - path: App/Commercial/CommercialLicenseModels.swift
+      - path: App/Commercial/PolarLicenseClient.swift
+      - path: App/Features/Settings/BrowserImport.swift
+      - path: App/Features/Settings/ExternalImport.swift
+    dependencies:
+      - package: StacklumeCore
+      - package: StacklumeMetadata
+      - package: ZIPFoundation
+      - package: swift-markdown
+        product: Markdown
+      - package: swift-cmark
+        product: cmark-gfm
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.swondev.stacklume.StacklumeTests
+        SWIFT_VERSION: "6.3"
+        SWIFT_STRICT_CONCURRENCY: complete
+        CODE_SIGNING_ALLOWED: NO
+
+schemes:
+  Stacklume:
+    build:
+      targets:
+        # La app NO se construye para la acción `test`: los logic tests no la necesitan
+        # y así evitamos compilar MLX (y su validación de macros) al testear.
+        Stacklume: [run, profile, analyze, archive]
+        StacklumeTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - StacklumeTests

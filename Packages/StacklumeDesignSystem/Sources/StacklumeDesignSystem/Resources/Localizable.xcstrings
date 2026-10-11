@@ -1,0 +1,23 @@
+{
+  "sourceLanguage" : "es",
+  "version" : "1.0",
+  "strings" : {
+    "Sistema" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "System" } } } },
+    "Oscuro" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Dark" } } } },
+    "Claro" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Light" } } } },
+    "Medianoche" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Midnight" } } } },
+    "Océano" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Ocean" } } } },
+    "Bosque" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Forest" } } } },
+    "Pizarra" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Slate" } } } },
+    "Carmesí" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Crimson" } } } },
+    "Nórdico" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Nordic" } } } },
+    "Solar oscuro" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Solar Dark" } } } },
+    "Vampiro" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Vampire" } } } },
+    "Ártico" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Arctic" } } } },
+    "Lavanda" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Lavender" } } } },
+    "Menta" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Mint" } } } },
+    "Cemento" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Cement" } } } },
+    "Piedra" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Stone" } } } },
+    "Acero" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Steel" } } } }
+  }
+}
