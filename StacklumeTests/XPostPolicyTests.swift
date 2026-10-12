@@ -1825,10 +1825,10 @@ struct XPostBatchAuditTests {
         }
     }
 
-    @Test("El tono impactante en inglés recibe imperativos ingleses")
+    @Test("El tono impactante prioriza detalles concretos sin imponer imperativos")
     func englishImpactfulPromptUsesEnglishActions() throws {
         let request = XPostGroupedCopyPolicy.prompt(context: try context(), tones: [.impactful], title: "Aster", language: "en", angle: "Descubrimiento", audience: "", budget: 212)
-        #expect(request.system.contains("imperativo en inglés"))
+        #expect(request.system.contains("detalle más llamativo y concreto"))
         #expect(!request.system.contains("Usa, Prueba"))
     }
 
@@ -1874,7 +1874,7 @@ struct XPostBatchAuditTests {
         let batch = XPostCopyBatch(copies: [.impactful: copy], context: context)
         #expect(XPostGroupedCopyPolicy.lexicalIssues(batch, source: source, language: "es", budget: 212).isEmpty)
         let prompt = XPostSemanticAuditPolicy.prompt(batch: batch, language: "es")
-        #expect(prompt.system.contains("cualquier verbo válido"))
+        #expect(prompt.system.contains("sin imponer un imperativo"))
         let rejected = try XPostSemanticAuditPolicy.extract(json(["variantes": [["tono": "impactful", "gancho": ["estado": "redaccion", "apoyos": []], "utilidad": ["estado": "aprobado", "apoyos": [0]]]]]), batch: batch)
         var workflow = XPostAuditedBatchWorkflow()
         try workflow.beginGeneration()
@@ -1905,6 +1905,17 @@ struct XPostBatchAuditTests {
         let prompt = XPostSemanticAuditPolicy.prompt(batch: batch, language: "es")
         #expect(prompt.system.contains("gancho_estado"))
         #expect(!prompt.user.contains("\"gancho\":\"Personaliza"))
+    }
+
+    @Test("Las frases generadas mantienen una separación legible sin cambiar hechos ni signos existentes")
+    func groupedSentencesHaveTerminalPunctuation() throws {
+        let context = try context()
+        let wire = try json(["variantes": [["tono": "educational", "gancho": "Aster admite aplicaciones de escritorio", "utilidad": "Ofrece edición de texto"]]])
+        let batch = try XPostGroupedCopyPolicy.extract(wire, tones: [.educational], context: context)
+        #expect(batch.copies[.educational]?.text == "Aster admite aplicaciones de escritorio. Ofrece edición de texto.")
+        let punctuated = try json(["variantes": [["tono": "curiosity", "gancho": "¿Aster admite aplicaciones de escritorio?", "utilidad": "Ofrece edición de texto."]]])
+        let question = try XPostGroupedCopyPolicy.extract(punctuated, tones: [.curiosity], context: context)
+        #expect(question.copies[.curiosity]?.gancho == "¿Aster admite aplicaciones de escritorio?")
     }
 
     @Test("Un tono redundante coincidente conserva el veredicto; una contradicción se rechaza")
