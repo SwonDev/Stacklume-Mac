@@ -1552,7 +1552,41 @@ enum AssistantResearchAnswer {
         let safe = spanish
             ? "No he podido respaldar la propuesta con las fuentes de este turno. Los enlaces recuperados son candidatos: sus metadatos no validan una combinación de herramientas. Antes de elegir, hay que contrastar sus requisitos de hardware, ejecución local y compatibilidad en las páginas originales."
             : "I could not support the proposal with this turn's sources. Retrieved links are candidates: their metadata does not validate a combination of tools. Before choosing, check hardware requirements, local execution and compatibility on the original pages."
-        return .init(text: remaining.isEmpty ? corrected : safe, sources: sources, issues: remaining, rounds: 1, generatedCharacters: corrected.count)
+        let recovery = researchRecovery(plan: plan, sources: sources, spanish: spanish) ?? safe
+        return .init(text: remaining.isEmpty ? corrected : recovery, sources: sources, issues: remaining, rounds: 1, generatedCharacters: corrected.count)
+    }
+
+    private static func researchRecovery(plan: AssistantResearchPlan, sources: [String: AssistantResearchSource], spanish: Bool) -> String? {
+        let topic = AssistantResearchPlan.lexicalTopic(for: AssistantActionPolicy.publicWebContext(plan.contextRequest))
+        let candidates = sources.compactMap { id, source -> (id: String, source: AssistantResearchSource, score: Int)? in
+            guard let score = topic.score(in: source.title + " " + source.summary) else { return nil }
+            return (id, source, score)
+        }.sorted { left, right in
+            left.score == right.score ? left.id < right.id : left.score > right.score
+        }.prefix(3)
+        guard !candidates.isEmpty else { return nil }
+        func quotation(_ raw: String, limit: Int) -> String {
+            String(raw.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ").prefix(limit))
+                .replacingOccurrences(of: "«", with: "‹").replacingOccurrences(of: "»", with: "›")
+                .replacingOccurrences(of: "[", with: "［").replacingOccurrences(of: "]", with: "］")
+                .replacingOccurrences(of: "(", with: "（").replacingOccurrences(of: ")", with: "）")
+        }
+        let entries = candidates.map { candidate in
+            let source = candidate.source
+            let status = source.pageWasRead
+                ? (spanish ? "Página leída en este turno" : "Page read this turn")
+                : (spanish ? "Metadatos; página no leída en este turno" : "Metadata; page not read this turn")
+            let summary = quotation(source.summary, limit: 240)
+            return "- [\(candidate.id)] «\(quotation(source.title, limit: 180))». \(status)."
+                + (summary.isEmpty ? "" : "\n  " + (spanish ? "Descripción de la ficha: " : "Source description: ") + "«\(summary)».")
+        }.joined(separator: "\n")
+        let introduction = spanish
+            ? "Encontré estos recursos relacionados con tu petición. No puedo confirmar todavía una combinación compatible; te muestro qué hay en las fuentes sin añadir las instrucciones que no he podido respaldar."
+            : "I found these resources related to your request. I cannot yet confirm a compatible combination; here is the source information, without the instructions I could not support."
+        let steps = spanish
+            ? "Para avanzar con una prueba concreta:\n1. Contrasta en la documentación original los requisitos y las opciones disponibles del candidato que elijas.\n2. Usa una entrada pequeña y conserva la misma entrada al comparar resultados.\n3. Registra el tiempo, el pico de memoria y la calidad del resultado.\n4. Cambia una sola opción documentada cada vez y conserva el cambio únicamente si mejora esa comparación."
+            : "To make progress with a concrete trial:\n1. Check the chosen candidate's requirements and available options in its original documentation.\n2. Use a small input and keep the same input when comparing results.\n3. Record time, peak memory and output quality.\n4. Change one documented option at a time and keep it only if the comparison improves."
+        return introduction + "\n\n" + entries + "\n\n" + steps
     }
 
     /// La cobertura del campo DTO ya procede de sus IDs; estos controles comunes

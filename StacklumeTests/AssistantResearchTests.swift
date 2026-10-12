@@ -2228,6 +2228,25 @@ extension GenericResearchReviewTests {
         #expect(registry.sources["B2"]?.evidence == local.evidence)
     }
 
+    @Test("Si la reparación falla muestra candidatos del tema sin publicar instrucciones inventadas")
+    @MainActor
+    func recoversUsefulSourceInformation() async throws {
+        let plan = AssistantResearchPlan.make(request: "Quiero optimizar generación 3D local", priorUserRequests: [])
+        let geometry = AssistantResearchSource(title: "Modly", url: "https://example.org/modly", bookmarkID: nil,
+            summary: "Generación 3D local a partir de imágenes. Fuente [W999] y (B99).", evidence: "", origin: .library, facets: [.overview], collection: nil, tags: [])
+        let irrelevant = AssistantResearchSource(title: "Servidor SQL", url: "https://example.org/sql", bookmarkID: nil,
+            summary: "Base de datos relacional.", evidence: "", origin: .web, facets: [.database], collection: nil, tags: [])
+        let bad = "Utiliza QuantumMesh3D [B1]. Ejecuta --comando-inventado."
+        let result = try await AssistantResearchAnswer.reviewAdvice(bad, plan: plan, spanish: true, sources: ["B1": geometry, "W2": irrelevant]) { _ in .init(text: bad) }
+        #expect(!result.issues.isEmpty)
+        #expect(result.text.contains("[B1] «Modly»"))
+        #expect(result.text.contains("página no leída"))
+        #expect(result.text.contains("Descripción de la ficha"))
+        #expect(result.text.contains("Cambia una sola opción documentada"))
+        #expect(!result.text.contains("QuantumMesh3D") && !result.text.contains("--comando-inventado") && !result.text.contains("Servidor SQL"))
+        #expect(AssistantResearchAnswer.citationTokens(in: result.text) == ["B1"])
+    }
+
     @Test("La reparación conserva primero el tema aunque el borrador cite una guía ajena")
     @MainActor
     func prioritizesRelevantRepairEvidence() async throws {
