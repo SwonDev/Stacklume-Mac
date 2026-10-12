@@ -16,8 +16,8 @@ settings:
     # Versionado: MARKETING_VERSION (semántica, sube por tanda de features) +
     # CURRENT_PROJECT_VERSION (sello AAAAMMDD.HHMM del build, lo estampa el comando de compilación
     # con `sed` antes de `xcodegen generate`). Así «Acerca de» muestra siempre la build más reciente.
-    MARKETING_VERSION: "1.62.1"
-    CURRENT_PROJECT_VERSION: "20261011.2027"
+    MARKETING_VERSION: "1.62.2"
+    CURRENT_PROJECT_VERSION: "20261012.0845"
     SWIFT_STRICT_CONCURRENCY: complete
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic

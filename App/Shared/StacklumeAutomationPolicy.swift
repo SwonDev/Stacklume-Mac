@@ -340,8 +340,8 @@ enum StacklumeAutomationPolicy {
     }
 }
 
-/// Los servicios de favicons reciben el dominio del enlace. Se consultan solo
-/// cuando el usuario habilita ese complemento de los iconos del propio sitio.
+/// Los servicios de favicons reciben el dominio del enlace. El respaldo histórico
+/// sigue activo salvo que el usuario lo desactive expresamente en Ajustes.
 enum FaviconPrivacyPolicy {
     static let enabledKey = "stacklume.thirdPartyFaviconsEnabled"
 
@@ -351,6 +351,6 @@ enum FaviconPrivacyPolicy {
         let provider = (["google.com", "www.google.com"].contains(host) && path.hasPrefix("/s2/favicons"))
             || (host == "icons.duckduckgo.com" && path.hasPrefix("/ip3/"))
             || (host.hasSuffix(".gstatic.com") && path.hasPrefix("/favicon"))
-        return !provider || defaults.bool(forKey: enabledKey)
+        return !provider || defaults.object(forKey: enabledKey) == nil || defaults.bool(forKey: enabledKey)
     }
 }

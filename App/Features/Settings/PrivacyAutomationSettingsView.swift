@@ -9,7 +9,7 @@ struct PrivacyAutomationSettingsView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.themePalette) private var palette
 
-    @AppStorage(FaviconPrivacyPolicy.enabledKey) private var thirdPartyFavicons = false
+    @AppStorage(FaviconPrivacyPolicy.enabledKey) private var thirdPartyFavicons = true
     @AppStorage(ClipboardMonitor.enabledKey) private var clipboardWatch = false
     @AppStorage(StacklumeSpotlightPolicy.enabledKey) private var spotlightEnabled = true
     @AppStorage(StacklumeSpotlightPolicy.privateContentEnabledKey)
@@ -68,7 +68,7 @@ struct PrivacyAutomationSettingsView: View {
             } header: {
                 Label("Iconos de los enlaces", systemImage: "globe")
             } footer: {
-                Text("Desactivado por defecto. Los iconos del propio sitio y los ya guardados siguen disponibles. Si lo activas, estos servicios recibirán el dominio del enlace para localizar su icono.")
+                Text("Completa los iconos que no se pueden descargar del propio sitio. Estos servicios reciben el dominio del enlace, sin su ruta ni su contenido. Los iconos se guardan en la caché local; puedes desactivar este respaldo y seguir usando los ya guardados.")
                     .stacklumeFont(.caption).foregroundStyle(palette.textSecondary)
             }
             clipboardSection

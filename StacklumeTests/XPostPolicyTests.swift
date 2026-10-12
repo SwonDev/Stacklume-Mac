@@ -1738,6 +1738,214 @@ struct XPostBatchAuditTests {
         #expect(issues == [.init(tone: .impactful, field: .utilidad, reason: .ortografia, words: ["inventadiña"])])
     }
 
+    @Test("Un formato incorrecto puede corregirse y exige auditar la nueva revisión")
+    func malformedResponseRecoveryStillRequiresAudit() throws {
+        var workflow = XPostAuditedBatchWorkflow()
+        try workflow.beginGeneration()
+        let invalid = try json(["variantes": rows() + [rows()[0]]])
+        #expect(throws: XPostCopyPolicy.CopyError.malformed) {
+            try XPostGroupedCopyPolicy.extract(invalid, tones: XPostTone.allCases, context: context())
+        }
+        try workflow.beginRepair()
+        let corrected = try batch()
+        workflow.stage(corrected)
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.notApproved) { try workflow.completedBatch() }
+        try workflow.markLexicallyValid(revision: corrected.revision)
+        try workflow.beginAudit()
+        try workflow.receive(XPostSemanticAuditPolicy.extract(json(["variantes": auditRows()]), batch: corrected))
+        #expect(try workflow.completedBatch().revision == corrected.revision)
+        #expect(workflow.calls == 3)
+        #expect(workflow.repairs == 1)
+    }
+
+    @Test("Una auditoría con formato de publicación no aprueba y puede repetirse sin cambiar el texto")
+    func malformedAuditRetryKeepsCurrentCopy() throws {
+        var workflow = XPostAuditedBatchWorkflow()
+        try workflow.beginGeneration()
+        let current = try batch()
+        workflow.stage(current)
+        try workflow.markLexicallyValid(revision: current.revision)
+        try workflow.beginAudit()
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.malformed) {
+            try XPostSemanticAuditPolicy.extract(json(["variantes": rows()]), batch: current)
+        }
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.notApproved) { try workflow.completedBatch() }
+        try workflow.beginAudit()
+        try workflow.receive(XPostSemanticAuditPolicy.extract(json(["variantes": auditRows()]), batch: current))
+        #expect(try workflow.completedBatch().revision == current.revision)
+        #expect(workflow.calls == 3)
+        #expect(workflow.repairs == 0)
+    }
+
+    @Test("El catálogo de citas conserva los bytes originales de la fuente")
+    func auditQuotationCatalogIsLiteral() throws {
+        let current = try batch()
+        let request = XPostSemanticAuditPolicy.prompt(batch: current, language: "es", repairingFormat: true)
+        let catalogText = try #require(request.user.components(separatedBy: "CITAS LITERALES DISPONIBLES:\n").last?
+            .components(separatedBy: "\nFIN DE CITAS.").first)
+        let entries = try #require(JSONSerialization.jsonObject(with: Data(catalogText.utf8)) as? [[String: Any]])
+        #expect(!entries.isEmpty)
+        for entry in entries {
+            let id = try #require(entry["id"] as? String), quote = try #require(entry["cita"] as? String)
+            let fragment = try #require(current.context.fragments.first { $0.id == id })
+            #expect((12...250).contains(quote.count))
+            #expect(Data(fragment.text.utf8).range(of: Data(quote.utf8)) != nil)
+        }
+    }
+
+    @Test("El catálogo conserva los cierres cortos y el ejemplo usa los tonos solicitados")
+    func quotationCatalogKeepsShortEnding() throws {
+        let complete = String(String(repeating: "El recurso procesa texto de la fuente ", count: 12).prefix(400)) + "es falso."
+        let context = try XPostCopyPolicy.generationContext(source: complete, tone: .technical)
+        let current = XPostCopyBatch(copies: [.technical: .init(gancho: "El recurso procesa texto.", utilidad: "La fuente describe su funcionamiento.", apoyo: context.support)], context: context)
+        let request = XPostSemanticAuditPolicy.prompt(batch: current, language: "es")
+        let catalogText = try #require(request.user.components(separatedBy: "CITAS LITERALES DISPONIBLES:\n").last?
+            .components(separatedBy: "\nFIN DE CITAS.").first)
+        let entries = try #require(JSONSerialization.jsonObject(with: Data(catalogText.utf8)) as? [[String: Any]])
+        let quotes = entries.compactMap { $0["cita"] as? String }
+        #expect(quotes.joined().hasSuffix("es falso."))
+        #expect(quotes.allSatisfy { (12...250).contains($0.count) })
+        #expect(request.system.contains("\"tono\":\"technical\""))
+        #expect(!request.system.contains("\"tono\":\"calm\""))
+    }
+
+    @Test("Explora es una acción válida y el vocabulario del público no altera el apoyo factual")
+    func curatedVocabularyAndReaderAction() throws {
+        let context = try context()
+        let copy = XPostGeneratedCopy(gancho: "Explora las aplicaciones de Aster.", utilidad: "Ofrece edición de texto para vibecoders.", apoyo: context.support)
+        #expect(throws: XPostCopyPolicy.CopyError.spelling(["vibecoders"])) {
+            try XPostCopyPolicy.validate(copy, source: source, context: context, language: "es", tone: .impactful, budget: 212, spellingIssues: ["vibecoders"])
+        }
+        #expect(try XPostCopyPolicy.validate(copy, source: source, context: context, language: "es", tone: .impactful, budget: 212,
+                                           spellingIssues: ["vibecoders"], spellingVocabulary: "Para público usuario de IA y vibecoders") == copy.text)
+        let invented = XPostGeneratedCopy(gancho: "Explora las aplicaciones de Aster.", utilidad: "Su GPU reduce la latencia.", apoyo: context.support)
+        #expect(throws: XPostCopyPolicy.CopyError.unsupportedEvidence) {
+            try XPostCopyPolicy.validate(invented, source: source, context: context, language: "es", tone: .impactful, budget: 212,
+                                        spellingVocabulary: "GPU reduce latencia")
+        }
+    }
+
+    @Test("El tono impactante en inglés recibe imperativos ingleses")
+    func englishImpactfulPromptUsesEnglishActions() throws {
+        let request = XPostGroupedCopyPolicy.prompt(context: try context(), tones: [.impactful], title: "Aster", language: "en", angle: "Descubrimiento", audience: "", budget: 212)
+        #expect(request.system.contains("imperativo en inglés"))
+        #expect(!request.system.contains("Usa, Prueba"))
+    }
+
+    @Test("Los avisos ortográficos se revisan en contexto sin bloquear términos técnicos válidos")
+    func dictionaryWarningsAreReviewedSemantically() throws {
+        let context = try context()
+        let copy = XPostGeneratedCopy(gancho: "Aster admite aplicaciones de escritorio.", utilidad: "Ofrece edición de texto.", apoyo: context.support)
+        let batch = XPostCopyBatch(copies: [.technical: copy], context: context)
+        let prompt = XPostSemanticAuditPolicy.prompt(batch: batch, language: "es", spellingWarnings: [.technical: ["renderizado", "edición"]])
+        #expect(prompt.user.contains("technical: renderizado, edición"))
+        #expect(prompt.system.contains("confirma si son faltas reales"))
+        #expect(prompt.system.contains("marca redaccion"))
+        #expect(XPostGroupedCopyPolicy.lexicalIssues(batch, source: source, language: "es", budget: 212).isEmpty)
+    }
+
+    @Test("La instrucción de estilo observada no puede guardarse como texto de una publicación")
+    func rejectsObservedImpactfulStyleLeak() throws {
+        let context = try context()
+        let copy = XPostGeneratedCopy(gancho: "Usa, Prueba, Descubre o Integra, seguido de una función concreta", utilidad: "Empieza con Usa, Prueba, Descubre o Integra, seguido de una función concreta", apoyo: context.support)
+        #expect(throws: XPostCopyPolicy.CopyError.instructionLeak) {
+            try XPostCopyPolicy.validate(copy, source: source, context: context, language: "es", tone: .impactful, budget: 212)
+        }
+        let batch = XPostCopyBatch(copies: [.impactful: copy], context: context)
+        let issues = XPostGroupedCopyPolicy.lexicalIssues(batch, source: source, language: "es", budget: 212)
+        #expect(Set(issues.map(\.field)) == Set(XPostCopyField.allCases))
+        #expect(issues.allSatisfy { $0.reason == .redaccion })
+    }
+
+    @Test("La reparación de curiosidad exige ambos signos en español")
+    func curiosityRepairUsesSpanishQuestionMarks() throws {
+        let context = try context()
+        let copy = XPostGeneratedCopy(gancho: "Aster admite aplicaciones de escritorio.", utilidad: "Ofrece edición de texto.", apoyo: context.support)
+        let batch = XPostCopyBatch(copies: [.curiosity: copy], context: context)
+        let issue = XPostCopyFieldIssue(tone: .curiosity, field: .gancho, reason: .tono)
+        let prompt = XPostGroupedCopyPolicy.prompt(context: context, tones: [.curiosity], title: "Aster", language: "es", angle: "Descubrimiento", audience: "", budget: 212, repairing: batch, issues: [issue])
+        #expect(prompt.user.contains("con ¿ al principio y ? al final"))
+    }
+
+    @Test("El tono impactante se revisa semánticamente sin una lista cerrada de verbos")
+    func impactfulStyleRequiresSemanticApproval() throws {
+        let context = try context()
+        let copy = XPostGeneratedCopy(gancho: "Personaliza la edición de texto.", utilidad: "Aster admite aplicaciones de escritorio.", apoyo: context.support)
+        let batch = XPostCopyBatch(copies: [.impactful: copy], context: context)
+        #expect(XPostGroupedCopyPolicy.lexicalIssues(batch, source: source, language: "es", budget: 212).isEmpty)
+        let prompt = XPostSemanticAuditPolicy.prompt(batch: batch, language: "es")
+        #expect(prompt.system.contains("cualquier verbo válido"))
+        let rejected = try XPostSemanticAuditPolicy.extract(json(["variantes": [["tono": "impactful", "gancho": ["estado": "redaccion", "apoyos": []], "utilidad": ["estado": "aprobado", "apoyos": [0]]]]]), batch: batch)
+        var workflow = XPostAuditedBatchWorkflow()
+        try workflow.beginGeneration()
+        workflow.stage(batch)
+        try workflow.markLexicallyValid(revision: batch.revision)
+        try workflow.beginAudit()
+        try workflow.receive(rejected)
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.notApproved) { try workflow.completedBatch() }
+    }
+
+    @Test("La revisión plana de un tono conserva todos los controles de aprobación y procedencia")
+    func singleToneFlatAuditIsStrict() throws {
+        let context = try context()
+        let copy = XPostGeneratedCopy(gancho: "Personaliza la edición de texto.", utilidad: "Aster admite aplicaciones de escritorio.", apoyo: context.support)
+        let batch = XPostCopyBatch(copies: [.impactful: copy], context: context)
+        let row: [String: Any] = ["tono": "impactful", "gancho_estado": "aprobado", "gancho_apoyos": [0], "utilidad_estado": "aprobado", "utilidad_apoyos": [0]]
+        #expect(try XPostSemanticAuditPolicy.extract(json(row), batch: batch).issues.isEmpty)
+        for (key, value) in [("gancho_estado", "Personaliza la edición de texto." as Any), ("tono", "calm" as Any), ("otra", "aprobado" as Any), ("gancho_apoyos", [true] as Any), ("gancho_apoyos", [0.5] as Any), ("gancho_apoyos", ["0"] as Any)] {
+            var invalid = row; invalid[key] = value
+            #expect(throws: XPostSemanticAuditPolicy.AuditError.malformed) { try XPostSemanticAuditPolicy.extract(json(invalid), batch: batch) }
+        }
+        for references in [[], [99999], [0, 0], [0, 1, 2]] {
+            var invalid = row; invalid["utilidad_apoyos"] = references
+            #expect(throws: XPostSemanticAuditPolicy.AuditError.invalidProvenance) { try XPostSemanticAuditPolicy.extract(json(invalid), batch: batch) }
+        }
+        var rejected = row; rejected["gancho_estado"] = "redaccion"; rejected["gancho_apoyos"] = [Int]()
+        #expect(try XPostSemanticAuditPolicy.extract(json(rejected), batch: batch).issues == [.init(tone: .impactful, field: .gancho, reason: .redaccion)])
+        let prompt = XPostSemanticAuditPolicy.prompt(batch: batch, language: "es")
+        #expect(prompt.system.contains("gancho_estado"))
+        #expect(!prompt.user.contains("\"gancho\":\"Personaliza"))
+    }
+
+    @Test("Un tono redundante coincidente conserva el veredicto; una contradicción se rechaza")
+    func redundantAuditToneMustMatch() throws {
+        let context = try context()
+        let copy = XPostGeneratedCopy(gancho: "Aster admite aplicaciones de escritorio.", utilidad: "Ofrece edición de texto.", apoyo: context.support)
+        let batch = XPostCopyBatch(copies: [.technical: copy], context: context)
+        let raw = #"{"variantes":[{"tono":"technical","gancho":{"estado":"aprobado","apoyos":[0]},"utilidad":{"estado":"aprobado","apoyos":[0],"tono":"technical"}}]}"#
+        #expect(try XPostSemanticAuditPolicy.extract(raw, batch: batch).issues.isEmpty)
+        let wrong = raw.replacingOccurrences(of: #""apoyos":[0],"tono":"technical""#, with: #""apoyos":[0],"tono":"calm""#)
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.malformed) { try XPostSemanticAuditPolicy.extract(wrong, batch: batch) }
+        let other = raw.replacingOccurrences(of: #","tono":"technical"}"#, with: #","extra":"technical"}"#)
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.malformed) { try XPostSemanticAuditPolicy.extract(other, batch: batch) }
+    }
+
+    @Test("Los índices recuperan citas originales y no aceptan referencias inventadas")
+    func indexedAuditReferences() throws {
+        let current = try batch()
+        let approved: [String: Any] = ["estado": "aprobado", "apoyos": [0]]
+        let indexed = XPostTone.allCases.map { ["tono": $0.rawValue, "gancho": approved, "utilidad": approved] as [String: Any] }
+        #expect(try XPostSemanticAuditPolicy.extract(json(["variantes": indexed]), batch: current).issues.isEmpty)
+        for references: [Any] in [[-1], [999], [0, 0], [0, 1, 2], []] {
+            var rejected = indexed
+            rejected[0]["gancho"] = ["estado": "aprobado", "apoyos": references]
+            #expect(throws: XPostSemanticAuditPolicy.AuditError.invalidProvenance) {
+                try XPostSemanticAuditPolicy.extract(json(["variantes": rejected]), batch: current)
+            }
+        }
+        for references: [Any] in [[true], [0.5], ["0"]] {
+            var malformed = indexed
+            malformed[0]["gancho"] = ["estado": "aprobado", "apoyos": references]
+            #expect(throws: XPostSemanticAuditPolicy.AuditError.malformed) {
+                try XPostSemanticAuditPolicy.extract(json(["variantes": malformed]), batch: current)
+            }
+        }
+        var semanticRejection = indexed
+        semanticRejection[0]["gancho"] = ["estado": "coherencia", "apoyos": []]
+        #expect(try XPostSemanticAuditPolicy.extract(json(["variantes": semanticRejection]), batch: current).issues
+            == [.init(tone: .impactful, field: .gancho, reason: .coherencia)])
+    }
+
     @Test("El diagnóstico de lote no persiste texto, citas ni palabras rechazadas")
     func batchDiagnosticsContainOnlyStructureAndReasons() throws {
         let value = try batch()

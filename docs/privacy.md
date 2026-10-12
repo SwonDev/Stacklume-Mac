@@ -22,7 +22,7 @@ El código abierto no publica estos archivos ni convierte tu biblioteca en una b
 |---|---|
 | Metadatos y portadas de un enlace | Solicitudes al sitio del enlace y a los recursos que proporcionan sus metadatos. |
 | Abrir o previsualizar una web | La URL y las solicitudes necesarias para cargar esa página. El sitio puede aplicar sus propias cookies y políticas. |
-| Iconos de terceros, si activas esa opción | El dominio del enlace a Google o DuckDuckGo. Desactivado por defecto. |
+| Respaldo de iconos de terceros, activado por defecto | El dominio del enlace a Google o DuckDuckGo, sin su ruta ni contenido. Puedes desactivarlo en Privacidad; los iconos ya guardados siguen disponibles en la caché local. |
 | Búsqueda web del asistente | Una consulta de búsqueda a DuckDuckGo y solicitudes a las páginas que lea. |
 | Descubrir, Hugging Face y Civitai | Consultas, filtros y solicitudes de contenido al proveedor correspondiente. |
 | Descargar modelos locales | Identificadores y solicitudes de archivos al alojamiento del modelo. Los pesos descargados se ejecutan localmente. |

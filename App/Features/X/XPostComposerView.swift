@@ -60,6 +60,8 @@ struct XPostComposerView: View {
                     hashtagControls
                     authorControls
                     generationControls
+                    Text(status).stacklumeFont(.caption).foregroundStyle(palette.textSecondary)
+                        .accessibilityLabel("Estado: \(status)")
                     variantControls
                     if comparing { variantComparison }
                     if showSource {
@@ -86,8 +88,6 @@ struct XPostComposerView: View {
                             status = "Publicación copiada."
                         }.disabled(draft.text.isEmpty || generating)
                     }
-                    Text(status).stacklumeFont(.caption).foregroundStyle(palette.textSecondary)
-                        .accessibilityLabel("Estado: \(status)")
                     Text("Revisa cada afirmación. Al abrir el borrador, podrás publicarlo desde X.")
                         .stacklumeFont(.caption).foregroundStyle(palette.textSecondary)
                 }
@@ -237,7 +237,7 @@ struct XPostComposerView: View {
                 .buttonStyle(.bordered).disabled(sourceURL == nil || authorResolving)
             Button("Generar los cinco tonos") { generate(tones: XPostTone.allCases) }
                 .buttonStyle(.bordered).disabled(sourceURL == nil || authorResolving)
-                .themedHelp("Genera los tonos uno a uno con el mismo modelo. Guarda el conjunto cuando terminan los cinco; cancelar o un fallo conserva todas las versiones anteriores.")
+                .themedHelp("Genera y revisa los tonos uno a uno con el mismo modelo. Guarda el conjunto cuando terminan los cinco; cancelar o un fallo conserva todas las versiones anteriores.")
         }
     }
 
@@ -409,77 +409,117 @@ struct XPostComposerView: View {
             var diagnostics: [XPostBatchDiagnostic] = []
             var phase = XPostBatchDiagnostic.Phase.generation
             var lastOutput = ""
+            var pending: [XPostCopyFieldIssue] = []
             do {
                 let context = try XPostCopyPolicy.generationContext(source: consultedSource, tone: .calm, sourceWasTruncated: sourceWasTruncated)
                 // Mismo modelo que el asistente y el enriquecido actuales. El campo
                 // aiProvider del core compartido es legado y no configura la app Mac.
-                await UnifiedAIService.ensureLiquidLoaded()
+                let runner = LocalAIRunner.shared
+                guard !runner.isDeactivated, runner.isAvailable else { throw UnifiedAIError.liquidNotLoaded }
+                // Pulsar Generar es un reintento explícito tras una carga fallida.
+                if runner.modelContainer == nil {
+                    status = "Cargando el modelo local…"
+                    guard await runner.ensureReady(userInitiated: true) != nil else {
+                        if case .failed(let message) = runner.state { throw GenerationError.modelLoading(message) }
+                        throw UnifiedAIError.liquidNotLoaded
+                    }
+                }
                 try Task.checkCancellation()
                 var generationDraft = requestedDraft
                 generationDraft.verifiedAuthor = author
                 var batch = XPostGenerationBatch(draft: generationDraft, tones: tones, suggestedHashtags: suggestions)
-                let previousTexts = requestedDraft.variants.filter { !tones.contains($0.tone) }.map(\.text)
-                var rejected: XPostCopyBatch?
-                var pending: [XPostCopyFieldIssue] = []
-                try workflow.beginGeneration()
-                var request = XPostGroupedCopyPolicy.prompt(context: context, tones: tones, title: title, language: language,
-                                                           angle: angle, audience: audience, budget: bodyBudget, previousTexts: previousTexts)
-                status = "Generando variantes con la fuente consultada…"
-                while true {
-                    guard generationID == identifier, loadedLinkID == requestedLinkID, link.id == requestedLinkID else { return }
-                    lastOutput = ""
-                    guard let output = await LocalAIRunner.shared.complete(system: request.system, prompt: request.user, maxTokens: 4096, enableThinking: false) else { throw UnifiedAIError.liquidFailed }
-                    lastOutput = output
-                    try Task.checkCancellation()
-                    guard generationID == identifier, loadedLinkID == requestedLinkID, link.id == requestedLinkID else { return }
-                    let copies = try XPostGroupedCopyPolicy.extract(output, tones: tones, context: context, repairing: rejected, issues: pending)
-                    workflow.stage(copies)
-                    var assessments: [XPostTone: XPostLanguageAssessment] = [:]
-                    var fieldAssessments: [XPostTone: [XPostCopyField: XPostLanguageAssessment]] = [:]
-                    var spelling: [XPostTone: [String]] = [:]
-                    for (tone, copy) in copies.copies {
-                        assessments[tone] = Self.languageAssessment(copy, requested: language)
-                        fieldAssessments[tone] = [.gancho: Self.languageAssessment(copy.gancho, requested: language),
-                                                  .utilidad: Self.languageAssessment(copy.utilidad, requested: language)]
-                        spelling[tone] = Self.spellingIssues(copy.text, language: language)
-                    }
-                    pending = XPostGroupedCopyPolicy.lexicalIssues(copies, source: consultedSource, language: language, budget: bodyBudget,
-                                                                  assessments: assessments, fieldAssessments: fieldAssessments,
-                                                                  spelling: spelling, previousTexts: previousTexts)
-                    diagnostics.append(XPostBatchDiagnostic(call: workflow.calls, phase: phase, raw: output, candidate: copies, issues: pending))
-                    if pending.isEmpty {
-                        try workflow.markLexicallyValid(revision: copies.revision)
-                        try workflow.beginAudit()
-                        phase = .audit
-                        status = "Revisando hechos, traducción y coherencia…"
-                        let auditRequest = XPostSemanticAuditPolicy.prompt(batch: copies, language: language)
+                var previousTexts = requestedDraft.variants.filter { !tones.contains($0.tone) }.map(\.text)
+                for (position, tone) in tones.enumerated() {
+                    workflow = XPostAuditedBatchWorkflow()
+                    pending = []
+                    phase = .generation
+                    let currentTones = [tone]
+                    var rejected: XPostCopyBatch?
+                    try workflow.beginGeneration()
+                    var request = XPostGroupedCopyPolicy.prompt(context: context, tones: currentTones, title: title, language: language,
+                                                               angle: angle, audience: audience, budget: bodyBudget, previousTexts: previousTexts)
+                    status = "Generando \(tone.title.lowercased()) · \(position + 1)/\(tones.count)…"
+                    while true {
+                        guard generationID == identifier, loadedLinkID == requestedLinkID, link.id == requestedLinkID else { return }
                         lastOutput = ""
-                        guard let auditOutput = await LocalAIRunner.shared.complete(system: auditRequest.system, prompt: auditRequest.user, maxTokens: 4096, enableThinking: false) else { throw UnifiedAIError.liquidFailed }
-                        lastOutput = auditOutput
+                        guard let output = await LocalAIRunner.shared.complete(system: request.system, prompt: request.user, maxTokens: 4096, enableThinking: true) else { throw UnifiedAIError.liquidFailed }
+                        lastOutput = output
                         try Task.checkCancellation()
                         guard generationID == identifier, loadedLinkID == requestedLinkID, link.id == requestedLinkID else { return }
-                        let audit = try XPostSemanticAuditPolicy.extract(auditOutput, batch: copies)
-                        try workflow.receive(audit)
-                        pending = audit.issues
-                        diagnostics.append(XPostBatchDiagnostic(call: workflow.calls, phase: phase, raw: auditOutput, candidate: copies, issues: pending))
-                        if pending.isEmpty {
-                            let approved = try workflow.completedBatch()
-                            for tone in tones {
-                                guard let copy = approved.copies[tone] else { throw XPostCopyPolicy.CopyError.malformed }
-                                let composed = XPostPolicy.composition(copy.text, source: url, hashtags: hashtags, mention: mention)
-                                try batch.stage(tone: tone, text: composed.text, hashtags: composed.appliedHashtags, mention: composed.appliedMention)
-                            }
-                            break
+                        let copies: XPostCopyBatch
+                        do {
+                            copies = try XPostGroupedCopyPolicy.extract(output, tones: currentTones, context: context, repairing: rejected, issues: pending)
+                        } catch let error as XPostCopyPolicy.CopyError where error == .malformed || error == .incomplete {
+                            diagnostics.append(XPostBatchDiagnostic(call: workflow.calls, phase: phase, raw: output))
+                            Self.recordCopyDiagnostics(diagnostics)
+                            try workflow.beginRepair()
+                            phase = .repair
+                            status = "Corrigiendo el formato de la publicación…"
+                            request = XPostGroupedCopyPolicy.prompt(context: context, tones: currentTones, title: title, language: language,
+                                                                   angle: angle, audience: audience, budget: bodyBudget, previousTexts: previousTexts,
+                                                                   repairing: rejected, issues: pending, repairingFormat: true)
+                            continue
                         }
+                        workflow.stage(copies)
+                        var assessments: [XPostTone: XPostLanguageAssessment] = [:]
+                        var fieldAssessments: [XPostTone: [XPostCopyField: XPostLanguageAssessment]] = [:]
+                        var spelling: [XPostTone: [String]] = [:]
+                        for (tone, copy) in copies.copies {
+                            assessments[tone] = Self.languageAssessment(copy, requested: language)
+                            fieldAssessments[tone] = [.gancho: Self.languageAssessment(copy.gancho, requested: language),
+                                                      .utilidad: Self.languageAssessment(copy.utilidad, requested: language)]
+                            spelling[tone] = Self.spellingIssues(copy.text, language: language)
+                        }
+                        pending = XPostGroupedCopyPolicy.lexicalIssues(copies, source: consultedSource, language: language, budget: bodyBudget,
+                                                                      assessments: assessments, fieldAssessments: fieldAssessments,
+                                                                      previousTexts: previousTexts)
+                        diagnostics.append(XPostBatchDiagnostic(call: workflow.calls, phase: phase, raw: output, candidate: copies, issues: pending, fieldAssessments: fieldAssessments))
+                        if pending.isEmpty {
+                            try workflow.markLexicallyValid(revision: copies.revision)
+                            phase = .audit
+                            var auditAttempts = 0
+                            while true {
+                                try workflow.beginAudit()
+                                auditAttempts += 1
+                                status = auditAttempts == 1 ? "Revisando hechos, traducción y coherencia…" : "Corrigiendo el formato de la revisión…"
+                                let auditRequest = XPostSemanticAuditPolicy.prompt(batch: copies, language: language, repairingFormat: auditAttempts > 1, spellingWarnings: spelling)
+                                lastOutput = ""
+                                guard let auditOutput = await LocalAIRunner.shared.complete(system: auditRequest.system, prompt: auditRequest.user, maxTokens: 4096, enableThinking: true) else { throw UnifiedAIError.liquidFailed }
+                                lastOutput = auditOutput
+                                try Task.checkCancellation()
+                                guard generationID == identifier, loadedLinkID == requestedLinkID, link.id == requestedLinkID else { return }
+                                do {
+                                    let audit = try XPostSemanticAuditPolicy.extract(auditOutput, batch: copies)
+                                    try workflow.receive(audit)
+                                    pending = audit.issues
+                                    diagnostics.append(XPostBatchDiagnostic(call: workflow.calls, phase: phase, raw: auditOutput, candidate: copies, issues: pending))
+                                    break
+                                } catch let error as XPostSemanticAuditPolicy.AuditError where auditAttempts < 3 && (error == .malformed || error == .invalidProvenance) {
+                                    diagnostics.append(XPostBatchDiagnostic(call: workflow.calls, phase: phase, raw: auditOutput, candidate: copies,
+                                                                           invalidProvenance: error == .invalidProvenance))
+                                    Self.recordCopyDiagnostics(diagnostics)
+                                }
+                            }
+                            if pending.isEmpty {
+                                let approved = try workflow.completedBatch()
+                                for tone in currentTones {
+                                    guard let copy = approved.copies[tone] else { throw XPostCopyPolicy.CopyError.malformed }
+                                    let composed = XPostPolicy.composition(copy.text, source: url, hashtags: hashtags, mention: mention)
+                                    try batch.stage(tone: tone, text: composed.text, hashtags: composed.appliedHashtags, mention: composed.appliedMention)
+                                    previousTexts.append(copy.text)
+                                }
+                                break
+                            }
+                        }
+                        Self.recordCopyDiagnostics(diagnostics)
+                        try workflow.beginRepair()
+                        rejected = copies
+                        phase = .repair
+                        status = "Corrigiendo los campos que necesitan revisión…"
+                        request = XPostGroupedCopyPolicy.prompt(context: context, tones: currentTones, title: title, language: language,
+                                                               angle: angle, audience: audience, budget: bodyBudget, previousTexts: previousTexts,
+                                                               repairing: copies, issues: pending)
                     }
-                    Self.recordCopyDiagnostics(diagnostics)
-                    try workflow.beginRepair()
-                    rejected = copies
-                    phase = .repair
-                    status = "Corrigiendo los campos que necesitan revisión…"
-                    request = XPostGroupedCopyPolicy.prompt(context: context, tones: tones, title: title, language: language,
-                                                           angle: angle, audience: audience, budget: bodyBudget, previousTexts: previousTexts,
-                                                           repairing: copies, issues: pending)
                 }
                 guard generationID == identifier, loadedLinkID == requestedLinkID, link.id == requestedLinkID else { return }
                 guard draft == requestedDraft else { throw XPostSemanticAuditPolicy.AuditError.staleRevision }
@@ -493,8 +533,19 @@ struct XPostComposerView: View {
                 diagnostics.append(XPostBatchDiagnostic(call: workflow.calls, phase: phase, raw: lastOutput, candidate: workflow.candidate,
                                                        invalidProvenance: (error as? XPostSemanticAuditPolicy.AuditError) == .invalidProvenance))
                 Self.recordCopyDiagnostics(diagnostics)
-                status = "No se pudo generar: \(error.localizedDescription) Tu texto se conserva."
+                let unrecognized = Array(Set(pending.filter { $0.reason == .ortografia }.flatMap(\.words))).sorted()
+                let detail = (error as? XPostSemanticAuditPolicy.AuditError) == .budget && !unrecognized.isEmpty
+                    ? "El corrector no reconoce: " + unrecognized.prefix(6).joined(separator: ", ") + "."
+                    : error.localizedDescription
+                status = "No se pudo generar: \(detail) Tu texto se conserva."
             }
+        }
+    }
+
+    private enum GenerationError: LocalizedError {
+        case modelLoading(String)
+        var errorDescription: String? {
+            switch self { case .modelLoading(let message): message }
         }
     }
 

@@ -414,6 +414,8 @@ enum PreviewImage {
         guard let urlString,
               let host = URL(string: urlString)?.host, !host.isEmpty else { return [] }
         return [
+            "https://\(host)/favicon.ico",
+            "https://\(host)/apple-touch-icon.png",
             "https://www.google.com/s2/favicons?domain=\(host)&sz=\(size)",
             "https://icons.duckduckgo.com/ip3/\(host).ico"
         ]

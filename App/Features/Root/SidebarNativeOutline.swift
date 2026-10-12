@@ -783,7 +783,14 @@ extension SidebarSnapshot {
             let side = min(image.size.width, image.size.height)
             let source = !hasThumbnail ? NSRect.zero : NSRect(
                 x: (image.size.width - side) / 2, y: (image.size.height - side) / 2, width: side, height: side)
-            image.draw(in: layout.iconRect, from: source, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            var destination = layout.iconRect
+            if !hasThumbnail, image.size.width > 0, image.size.height > 0 {
+                let scale = min(destination.width / image.size.width, destination.height / image.size.height)
+                let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+                destination = NSRect(x: destination.midX - size.width / 2, y: destination.midY - size.height / 2,
+                                     width: size.width, height: size.height)
+            }
+            image.draw(in: destination, from: source, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             NSGraphicsContext.restoreGraphicsState()
         }
     }

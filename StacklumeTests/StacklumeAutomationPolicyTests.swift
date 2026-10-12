@@ -3,15 +3,15 @@ import Testing
 
 @Suite("Automatización — límites y filtros seguros")
 struct StacklumeAutomationPolicyTests {
-    @Test("Los favicons de terceros exigen consentimiento")
-    func thirdPartyFaviconsRequireConsent() throws {
+    @Test("El respaldo histórico de favicons respeta la desactivación explícita")
+    func thirdPartyFaviconsRespectExplicitOptOut() throws {
         let suite = "StacklumeFaviconPrivacy-\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let providers = ["https://www.google.com/s2/favicons?domain=example.org", "https://icons.duckduckgo.com/ip3/example.org.ico", "https://t0.gstatic.com/faviconV2?url=example.org"]
-        for raw in providers {
-            #expect(!FaviconPrivacyPolicy.allows(try #require(URL(string: raw)), in: defaults))
-        }
+        for raw in providers { #expect(FaviconPrivacyPolicy.allows(try #require(URL(string: raw)), in: defaults)) }
+        defaults.set(false, forKey: FaviconPrivacyPolicy.enabledKey)
+        for raw in providers { #expect(!FaviconPrivacyPolicy.allows(try #require(URL(string: raw)), in: defaults)) }
         #expect(FaviconPrivacyPolicy.allows(try #require(URL(string: "https://example.org/favicon.ico")), in: defaults))
         #expect(FaviconPrivacyPolicy.allows(try #require(URL(string: "https://www.google.com/images/branding/googlelogo.png")), in: defaults))
         defaults.set(true, forKey: FaviconPrivacyPolicy.enabledKey)
