@@ -463,11 +463,11 @@ struct LinkDetailView: View {
             // «Mejorar con IA» sin el modelo instalado: avisa del tamaño antes de descargar y
             // ofrece una vía sin IA (solo metadatos, que también obtiene la imagen).
             .confirmationDialog("Mejorar con IA", isPresented: $showAIDownloadPrompt, titleVisibility: .visible) {
-                Button("Descargar IA y mejorar (≈8,4 GB)") { runEnrich(useAI: true) }
+                Button("Descargar IA y mejorar (≈\(LocalAIRunner.approxDownloadGB.formatted(.number.precision(.fractionLength(1)))) GB)") { runEnrich(useAI: true) }
                 Button("Solo actualizar metadatos") { runEnrich(useAI: false) }
                 Button("Cancelar", role: .cancel) {}
             } message: {
-                Text("La mejora con IA usa el modelo local (LFM2.5, ~8,4 GB), 100 % en tu Mac. También puedes actualizar solo los metadatos —título, descripción e imagen— sin descargar nada.")
+                Text("La mejora con IA usa \(LocalAIRunner.modelDisplayName), 100 % en tu Mac. También puedes actualizar solo los metadatos: título, descripción e imagen, sin descargar nada.")
             }
             .sheet(isPresented: $showCoverPicker) {
                 CoverPickerSheet(link: link) {

@@ -4,15 +4,17 @@ struct AssistantStoredMessage: Codable, Equatable, Sendable {
     let isUser: Bool
     let text: String
     let references: [AssistantLinkReference]
+    let imageID: String?
 
-    init(isUser: Bool, text: String, references: [AssistantLinkReference] = []) {
+    init(isUser: Bool, text: String, references: [AssistantLinkReference] = [], imageID: String? = nil) {
         self.isUser = isUser
         self.text = text
         self.references = references
+        self.imageID = isUser ? imageID.flatMap { UUID(uuidString: $0)?.uuidString } : nil
     }
 
     private enum CodingKeys: String, CodingKey {
-        case isUser, text, references
+        case isUser, text, references, imageID
     }
 
     init(from decoder: Decoder) throws {
@@ -21,6 +23,8 @@ struct AssistantStoredMessage: Codable, Equatable, Sendable {
         text = try values.decode(String.self, forKey: .text)
         // Compatibilidad con los historiales de 1.49 y anteriores.
         references = try values.decodeIfPresent([AssistantLinkReference].self, forKey: .references) ?? []
+        let rawID = try values.decodeIfPresent(String.self, forKey: .imageID)
+        imageID = isUser ? rawID.flatMap { UUID(uuidString: $0)?.uuidString } : nil
     }
 }
 
@@ -103,6 +107,7 @@ enum AssistantConversationStore {
             let empty = Data("[]".utf8)
             try PrivateFileIO.write(empty, to: backupURL(for: url))
             try PrivateFileIO.write(empty, to: url)
+            AssistantChatImageStore.purge(retaining: [], storeURL: url)
             return true
         } catch { return false }
     }
@@ -134,6 +139,9 @@ enum AssistantConversationStore {
                 try PrivateFileIO.write(previous, to: backup)
             }
             try PrivateFileIO.write(data, to: url)
+            let backup = decodedSessions(from: backupURL(for: url)) ?? []
+            let retained = Set((safe + backup).flatMap { $0.messages.compactMap(\.imageID) })
+            AssistantChatImageStore.purge(retaining: retained, storeURL: url)
             return true
         } catch {
             return false
@@ -159,7 +167,8 @@ enum AssistantConversationStore {
                         return text.isEmpty ? nil : AssistantStoredMessage(
                             isUser: message.isUser,
                             text: text,
-                            references: references
+                            references: references,
+                            imageID: message.imageID
                         )
                     }
                 return copy

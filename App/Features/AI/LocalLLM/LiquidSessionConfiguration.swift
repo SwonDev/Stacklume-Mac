@@ -2,26 +2,44 @@ import Foundation
 import MLX
 import MLXLMCommon
 
-/// Conserva modelo, tokenizador y plantilla. Solo la sesión directa recibe un
-/// procesador propio que completa su prefijo de asistente antes de generar.
+/// Conserva pesos y tokenizador dentro de la exclusión del modelo. MiMo recibe
+/// su apertura de razonamiento en la entrada real, también al interpretar imágenes.
 enum LiquidSessionConfiguration {
     static func withSessionContainer<Result: Sendable>(
         for model: ModelContainer, modelID: String, thinking: Bool, observer: OneShotObserver? = nil,
         operation: @Sendable (ModelContainer) async throws -> Result
     ) async throws -> Result {
         let directory = try await model.modelDirectory
-        let prefix = AssistantSessionPolicy.directResponsePrefix(
+        let reasonedMiMo = thinking && modelID == LocalAIModel.mimo.repositoryID
+        let prefix = reasonedMiMo ? "<think>\n" : AssistantSessionPolicy.directResponsePrefix(
             modelID: modelID, directoryName: directory.lastPathComponent, thinking: thinking
         )
         // El alias comparte pesos, pero nunca sale de la exclusión del original.
         // La operación incluye el stream y synchronize antes de liberar este lock.
         return try await model.perform { context in
             let processor: any UserInputProcessor = prefix.map {
-                DirectInputProcessor(base: context.processor, suffix: context.tokenizer.encode(text: $0, addSpecialTokens: false), observer: observer)
+                DirectInputProcessor(base: context.processor, suffix: context.tokenizer.encode(text: $0, addSpecialTokens: false), permitsMedia: reasonedMiMo, observer: observer)
             } ?? context.processor
             let session = ModelContainer(context: .init(configuration: context.configuration, model: context.model,
                 processor: processor, tokenizer: context.tokenizer))
             return try await operation(session)
+        }
+    }
+
+    static func reasoningComponents(for container: ModelContainer, modelID: String,
+                                    totalTokens: Int, answerTokens: Int) async throws -> GenerationComponents {
+        guard LocalAIModel.allCases.contains(where: { $0.repositoryID == modelID }),
+              let budget = AssistantSessionPolicy.reasoningBudget(totalTokens: totalTokens, answerTokens: answerTokens)
+        else { throw ThinkingBudgetError.unsupportedReasoningProtocol }
+        return try await container.perform { context in
+            let implicitEnd = modelID == LocalAIModel.liquid.repositoryID ? "<|tool_call_start|>" : "<tool_call>"
+            let reasoning = ReasoningConfig(startDelimiter: "<think>", endDelimiter: "</think>",
+                promptStrategy: .templateFlag(key: "enable_thinking", defaultOn: true),
+                implicitEndDelimiters: [implicitEnd])
+            return try GenerationComponents().applyingThinkingBudget(
+                ThinkingBudgetConfiguration(maximumTokenCount: budget,
+                    minimumAnswerTokenCount: min(256, max(1, answerTokens)), transitionOverride: .immediate),
+                reasoning: reasoning, tokenizer: context.tokenizer)
         }
     }
 
@@ -45,15 +63,15 @@ enum LiquidSessionConfiguration {
     private struct DirectInputProcessor: UserInputProcessor {
         let base: any UserInputProcessor
         let suffix: [Int]
+        let permitsMedia: Bool
         let observer: OneShotObserver?
 
         func prepare(input: UserInput) async throws -> LMInput {
             let prepared = try await base.prepare(input: input)
             defer { LiquidSessionConfiguration.observe(observer, at: .inputPrepared) }
-            // Medios y formas desconocidas conservan íntegra la entrada original.
-            // Las máscaras de validez de texto extienden su cola con tokens válidos.
-            guard input.images.isEmpty, input.videos.isEmpty,
-                  prepared.image == nil, prepared.video == nil,
+            // Los medios procesados de MiMo se conservan; el prefijo se añade al
+            // final del texto. Las máscaras de validez reciben tokens válidos.
+            guard permitsMedia || (input.images.isEmpty && input.videos.isEmpty && prepared.image == nil && prepared.video == nil),
                   !prepared.text.tokens.shape.isEmpty else { return prepared }
             let tokens = prepared.text.tokens
             let tokenShape = tokens.shape

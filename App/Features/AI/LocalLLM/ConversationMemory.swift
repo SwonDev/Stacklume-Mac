@@ -198,7 +198,7 @@ final class ConversationMemory {
         let target = language == "en" ? "English" : "español"
         let system = "Resume en \(target), en 2-3 frases, lo ESENCIAL de esta parte de la conversación entre un usuario y su asistente de marcadores (qué pidió, qué se hizo, qué quedó pendiente). Responde SOLO con el resumen, sin preámbulos ni viñetas."
         guard let raw = await LocalAIRunner.shared.complete(system: system, prompt: String(text.prefix(4000)),
-                                                            maxTokens: 512, enableThinking: false) else { return nil }
+                                                            maxTokens: 512, enableThinking: true) else { return nil }
         // Si el modelo no cerró su bloque de razonamiento (`</think>` ausente), `afterThinking`
         // devuelve el RAZONAMIENTO crudo: NO lo guardes como resumen (sería ruido en la memoria).
         guard raw.contains("</think>") || !raw.contains("<think>") else { return nil }
@@ -223,7 +223,7 @@ final class ConversationMemory {
         DURADEROS (no acciones puntuales de este turno). Si no hay nada, responde [].
         """
         guard let raw = await LocalAIRunner.shared.complete(system: system, prompt: String(text.prefix(4000)),
-                                                            maxTokens: 512, enableThinking: false) else { return nil }
+                                                            maxTokens: 512, enableThinking: true) else { return nil }
         return parseTriples(LiquidAIService.afterThinking(raw))
     }
 

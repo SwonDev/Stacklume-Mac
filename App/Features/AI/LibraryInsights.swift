@@ -40,7 +40,7 @@ enum LibraryInsights {
         // pocos tokens lo gasta TODO razonando y nunca cierra el bloque ni escribe la respuesta
         // (entonces `withoutThinking` devuelve ""). Con margen, cierra el `<think>` y responde.
         let out = await LocalAIRunner.shared.complete(system: system, prompt: prompt,
-                                                      maxTokens: 700, enableThinking: false)
+                                                      maxTokens: 700, enableThinking: true)
         let text = AIText.withoutThinking(out ?? "")
         return text.isEmpty ? nil : text
     }
@@ -82,7 +82,7 @@ enum LibraryInsights {
         // Margen amplio para que el bloque `<think>` de LFM2.5 cierre y deje sitio a la
         // respuesta (con poco presupuesto se quedaba razonando y `withoutThinking` vaciaba todo).
         let out = await LocalAIRunner.shared.complete(system: system, prompt: prompt,
-                                                      maxTokens: 700, enableThinking: false)
+                                                      maxTokens: 700, enableThinking: true)
         let text = AIText.withoutThinking(out ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text
     }

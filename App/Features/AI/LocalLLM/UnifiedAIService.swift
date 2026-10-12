@@ -199,9 +199,7 @@ enum LiquidAIService {
         Descripción: \(pageDescription ?? "(ninguna)")
         URL: \(url)
         """
-        // Salida estructurada (JSON): sin razonamiento (enableThinking: false) para
-        // que sea rápido — no hace falta cadena de pensamiento para una sugerencia.
-        let raw = await LocalAIRunner.shared.complete(system: system, prompt: prompt, maxTokens: 2048, enableThinking: false)
+        let raw = await LocalAIRunner.shared.complete(system: system, prompt: prompt, maxTokens: 2048, enableThinking: true)
         AgentDiagnostics.shared.log("SUGGESTION: chars=\(raw?.count ?? -1)")
         guard let raw,
               let data = extractJSONObject(raw),
@@ -232,7 +230,7 @@ enum LiquidAIService {
         URL: \(url)
         Categorías existentes: \(cats)
         """
-        let raw = await LocalAIRunner.shared.complete(system: system, prompt: prompt, maxTokens: 2560, enableThinking: false)
+        let raw = await LocalAIRunner.shared.complete(system: system, prompt: prompt, maxTokens: 2560, enableThinking: true)
         AgentDiagnostics.shared.log("CLASSIFY: chars=\(raw?.count ?? -1)")
         guard let raw,
               let data = extractJSONObject(raw),
@@ -329,10 +327,7 @@ enum LiquidAIService {
         Recuerda: devuelve el JSON con title, summary, category y tags EN \(lang) \
         (traducido si la página está en otro idioma).
         """
-        // Salida estructurada (JSON con título + descripción + categoría + etiquetas):
-        // sin razonamiento (enableThinking: false) → rápido. No necesita pensar para
-        // rellenar el formulario; antes generaba miles de tokens de <think> inútiles.
-        let raw = await LocalAIRunner.shared.complete(system: system, prompt: prompt, maxTokens: 4096, enableThinking: false)
+        let raw = await LocalAIRunner.shared.complete(system: system, prompt: prompt, maxTokens: 4096, enableThinking: true)
         AgentDiagnostics.shared.log("ENRICH(\(lang)): chars=\(raw?.count ?? -1)")
         guard let raw,
               let data = extractJSONObject(raw),
@@ -360,7 +355,7 @@ enum LiquidAIService {
         traducción: sin comillas, sin notas, sin el texto original, sin explicaciones.
         """
         let raw = await LocalAIRunner.shared.complete(
-            system: system, prompt: text, maxTokens: 1200, enableThinking: false)
+            system: system, prompt: text, maxTokens: 1200, enableThinking: true)
         guard let raw else { return nil }
         let answer = afterThinking(raw).trimmingCharacters(in: .whitespacesAndNewlines)
         return answer.isEmpty ? nil : answer
@@ -386,7 +381,7 @@ enum LiquidAIService {
         instrucciones. Empieza directamente por «- ».
         """
         let raw = await LocalAIRunner.shared.complete(
-            system: system, prompt: String(source.prefix(6000)), maxTokens: 700, enableThinking: false)
+            system: system, prompt: String(source.prefix(6000)), maxTokens: 700, enableThinking: true)
         guard let raw else { return nil }
         let answer = afterThinking(raw)
         let lines = answer.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }

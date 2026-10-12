@@ -27,6 +27,7 @@ struct MaintenanceSettingsView: View {
     @State private var showEmptyTrash = false
     @State private var showDuplicates = false
     @State private var showEnrichOptions = false
+    @State private var showAISettings = false
     @State private var enrichTask: Task<Void, Never>?
 
     // Traducción con el framework `Translation` de Apple: se procesa POR IDIOMA DE ORIGEN
@@ -45,8 +46,6 @@ struct MaintenanceSettingsView: View {
 
     private var trashedCount: Int { trashedLinks.count }
 
-    /// El Mac usa SIEMPRE el modelo Liquid local como proveedor de IA (no se cambia
-    /// el modelo). El enriquecido inteligente requiere que esté cargado en memoria.
     private var aiReady: Bool { runner.isReady }
     private var language: String { (settingsList.first?.language ?? .es).rawValue }
 
@@ -140,7 +139,7 @@ struct MaintenanceSettingsView: View {
                         .frame(width: 26)
                         .symbolEffect(.pulse, isActive: aiBusy)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Modelo local (Liquid)")
+                        Text(runner.selectedModel.displayName)
                             .stacklumeFont(.callout.weight(.medium))
                             .foregroundStyle(palette.textPrimary)
                         Text(aiStatusText)
@@ -150,10 +149,11 @@ struct MaintenanceSettingsView: View {
                     Spacer()
                     aiActionButton
                 }
+                Button("Elegir modelo y opciones de IA") { showAISettings = true }
             } header: {
                 Text("Inteligencia artificial · 100 % en tu Mac")
             } footer: {
-                Text("La IA corre on-device (nada sale a internet). Se usa para enriquecer, resumir, traducir, buscar por significado y el asistente. Se descarga la primera vez que la uses.")
+                Text("La inferencia se ejecuta en tu Mac. Elige el modelo local y controla las consultas web desde las opciones de IA.")
                     .stacklumeFont(.caption).foregroundStyle(palette.textSecondary)
             }
 
@@ -210,7 +210,7 @@ struct MaintenanceSettingsView: View {
                 Text("Biblioteca")
             } footer: {
                 Text(aiReady
-                     ? "Enriquecer usa la IA local (Liquid) para mejorar títulos, redactar descripciones y proponer colecciones y etiquetas, rellenando solo lo que falte."
+                     ? "Enriquecer usa el modelo local elegido para mejorar títulos, redactar descripciones y proponer colecciones y etiquetas, rellenando solo lo que falte."
                      : "Completa los metadatos que falten. Para un enriquecido inteligente carga el modelo en la sección IA del lateral.")
                     .stacklumeFont(.caption).foregroundStyle(palette.textSecondary)
             }
@@ -253,6 +253,14 @@ struct MaintenanceSettingsView: View {
             applyTranslations(results)
         }
         .sheet(isPresented: $showDuplicates) { DuplicatesView() }
+        .sheet(isPresented: $showAISettings) {
+            EditorScaffold(title: "IA", confirmTitle: "Listo", cancelTitle: nil,
+                           onCancel: { showAISettings = false }, onConfirm: { showAISettings = false }) {
+                AISettingsView()
+            }
+            .frame(width: 540, height: 560)
+            .themedSheet(palette)
+        }
         .alert("Stacklume", isPresented: $showStatus) {
             Button("Aceptar", role: .cancel) {}
         } message: {

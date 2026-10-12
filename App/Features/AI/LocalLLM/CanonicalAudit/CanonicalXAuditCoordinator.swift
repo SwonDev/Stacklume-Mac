@@ -159,7 +159,7 @@ struct CanonicalAuditOutcome: Codable, Sendable {
             guard !phaseWriteFailed else { throw CanonicalTicketError.changed }
             calls = 1
             raw = await runner.complete(system: prepared.request.system, prompt: prepared.request.user,
-                                        maxTokens: 4_096, enableThinking: false, observer: observer)
+                                        maxTokens: 4_096, enableThinking: true, observer: observer)
             projection.finish()
             self.projection = nil
             try Task.checkCancellation()

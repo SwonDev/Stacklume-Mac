@@ -43,7 +43,7 @@ enum LinkSummarizer {
 
         let langName = language == "en" ? "inglés" : "español"
         let system = "Eres un asistente que resume. Devuelve UNA sola frase (máximo 25 palabras) en \(langName) con la idea principal del contenido. Sin preámbulo, sin comillas, sin viñetas."
-        guard let raw = await runner.complete(system: system, prompt: excerpt, maxTokens: 160, enableThinking: false),
+        guard let raw = await runner.complete(system: system, prompt: excerpt, maxTokens: 160, enableThinking: true),
               link.modelContext != nil else { return false }
 
         let text = AIText.withoutThinking(raw)

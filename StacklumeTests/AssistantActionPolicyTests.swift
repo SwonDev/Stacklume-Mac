@@ -3,6 +3,35 @@ import Testing
 
 @Suite("Asistente IA — política determinista")
 struct AssistantActionPolicyTests {
+    @Test("Una pregunta visual directa no añade fuentes ajenas; investigar conserva sus herramientas")
+    func directVisualQuestionAndExplicitResearch() {
+        let question = "¿Qué color tiene cada mitad de la imagen?"
+        #expect(AssistantActionPolicy.selectedTools(for: question, hasLinkContext: false, hasVisualContext: true).isEmpty)
+        #expect(AssistantActionPolicy.selectedTools(for: question, hasLinkContext: true, hasVisualContext: true).isEmpty)
+        #expect(AssistantResearchPlan.make(request: question, priorUserRequests: [], hasVisualContext: true).libraryQueries.isEmpty)
+        let advice = "¿Cómo puedo mejorar esta imagen?"
+        #expect(AssistantActionPolicy.selectedTools(for: advice, hasLinkContext: true, hasVisualContext: true).isEmpty)
+        let visualPlan = AssistantResearchPlan.make(request: advice, priorUserRequests: ["Quiero optimizar mi generación 3D local"], hasVisualContext: true)
+        #expect(visualPlan.libraryQueries.isEmpty)
+        #expect(!visualPlan.requiresSourceResearch)
+        #expect(!visualPlan.isFollowUp)
+        let library = "Busca en mi biblioteca recursos parecidos a esta imagen"
+        #expect(AssistantActionPolicy.selectedTools(for: library, hasLinkContext: false, hasVisualContext: true).contains("buscar_biblioteca"))
+        #expect(!AssistantResearchPlan.make(request: library, priorUserRequests: [], hasVisualContext: true).libraryQueries.isEmpty)
+        let web = "Busca en internet información actual sobre esta imagen"
+        #expect(AssistantActionPolicy.selectedTools(for: web, hasLinkContext: false, hasVisualContext: true).contains("buscar_web"))
+        #expect(!AssistantActionPolicy.selectedTools(for: question, hasLinkContext: false).isEmpty)
+        #expect(AssistantResearchPlan.make(request: "Quiero optimizar mi generación 3D local", priorUserRequests: [], hasVisualContext: true).requiresSourceResearch)
+        let continuation = AssistantResearchPlan.make(request: "También quiero almacenamiento local", priorUserRequests: ["Quiero crear una app de marcadores con esta interfaz"], hasVisualContext: true)
+        #expect(continuation.isFollowUp)
+        #expect(continuation.isSoftwarePlanning)
+        #expect(continuation.requiresSourceResearch)
+        let imageExport = AssistantResearchPlan.make(request: "Además, añade exportación de la imagen a PDF.", priorUserRequests: ["Quiero crear una app de marcadores con esta interfaz"], hasVisualContext: true)
+        #expect(imageExport.isFollowUp)
+        #expect(imageExport.isSoftwarePlanning)
+        #expect(imageExport.contextRequest.contains("marcadores"))
+    }
+
     @Test("Consultar colecciones, etiquetas y estados no autoriza escrituras")
     func readQuestionsDoNotGrantWrites() {
         let queries = ["¿Qué etiquetas tiene este enlace?", "Muéstrame mis colecciones",

@@ -1,17 +1,13 @@
 import SwiftUI
 import StacklumeDesignSystem
 
-/// Ajustes de IA: estado del modelo Liquid local y carga/liberación.
+/// Selección, estado y memoria del modelo local.
 struct AISettingsView: View {
     @Environment(\.themePalette) private var palette
     @State private var runner = LocalAIRunner.shared
     /// Autocompletar con IA al añadir un enlace (lo respeta el disparo automático del
     /// editor; el botón manual «Autocompletar con IA» funciona siempre). Por defecto, activado.
     @AppStorage("stacklume.aiAutoEnrich") private var aiAutoEnrich = true
-    /// Razonamiento del asistente (cadena de pensamiento). Activado por defecto: el chat
-    /// razona en la 1.ª ronda para elegir mejor las herramientas. Desactívalo para
-    /// respuestas más directas y rápidas.
-    @AppStorage("stacklume.aiThinking") private var aiThinking = true
     /// La web es opcional y explícita: ninguna parte de la biblioteca ni del chat se
     /// envía. Solo sale la consulta de una petición web y se procesa el resultado localmente.
     @AppStorage(AssistantWebAccess.enabledKey) private var webSearchEnabled = true
@@ -52,10 +48,25 @@ struct AISettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(LocalAIRunner.modelDisplayName)
                             .stacklumeFont(.title3.weight(.bold)).foregroundStyle(palette.textPrimary)
-                        Text("Modelo local on-device · ~\(LocalAIRunner.approxDownloadGB, specifier: "%.1f") GB")
+                        Text("\(runner.selectedModel.capabilities) · ~\(LocalAIRunner.approxDownloadGB, specifier: "%.1f") GB")
                             .stacklumeFont(.caption).foregroundStyle(palette.textSecondary)
                     }
                 }
+
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
+                    Picker("Modelo local", selection: Binding(get: { runner.selectedModel }, set: { _ = runner.selectModel($0) })) {
+                        ForEach(LocalAIModel.allCases) { model in
+                            Text(model.displayName + (model == LocalAIModel.defaultModel ? " · recomendado" : "")).tag(model)
+                        }
+                    }
+                    .disabled(!runner.canChangeModel)
+                    Text(runner.canChangeModel
+                         ? "Cambiar de modelo libera sus pesos de la memoria y conserva tus chats y los modelos descargados. Pulsa «Cargar modelo» para usarlo."
+                         : "Podrás cambiar el modelo cuando termine la carga o la generación en curso.")
+                        .stacklumeFont(.footnote).foregroundStyle(palette.textSecondary)
+                }
+                .padding(DesignSystem.Spacing.sm)
+                .background(palette.surface, in: RoundedRectangle(cornerRadius: DesignSystem.cornerRadius, style: .continuous))
 
                 HStack {
                     Text("Estado").foregroundStyle(palette.textSecondary)
@@ -77,7 +88,7 @@ struct AISettingsView: View {
                             .frame(maxWidth: .infinity).padding(.vertical, 4)
                     }
                     .stacklumeButton()
-                    .disabled(runner.isBusy)
+                    .disabled(!runner.canChangeModel)
 
                     if runner.isReady {
                         Button {
@@ -91,7 +102,7 @@ struct AISettingsView: View {
                 }
                 .stacklumeGlassContainer(spacing: DesignSystem.Spacing.sm)
 
-                Text("El modelo Liquid se ejecuta íntegramente en tu Mac (Apple Silicon, MLX). Si lo tienes en LM Studio, se reutiliza desde ahí; si no, se descarga la primera vez.")
+                Text("La IA se ejecuta en tu Mac con MLX. Stacklume reutiliza pesos MLX compatibles de LM Studio o de Hugging Face, o los descarga la primera vez. Los archivos GGUF requieren otra conversión y no se cargan en este motor.")
                     .stacklumeFont(.footnote).foregroundStyle(palette.textSecondary)
 
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
@@ -109,12 +120,9 @@ struct AISettingsView: View {
                 .background(palette.surface, in: RoundedRectangle(cornerRadius: DesignSystem.cornerRadius, style: .continuous))
 
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                    Toggle(isOn: $aiThinking) {
-                        Label("Razonamiento del asistente", systemImage: "brain")
-                            .foregroundStyle(palette.textPrimary)
-                    }
-                    .tint(palette.accent)
-                    Text("Cuando está activado, el asistente razona internamente antes de responder para elegir mejor las herramientas. Ese proceso interno no se muestra ni se guarda en el historial.")
+                    Label("Razonamiento activado", systemImage: "brain")
+                        .foregroundStyle(palette.textPrimary)
+                    Text("El modelo local razona antes de responder, generar contenido y revisarlo. Tiene un presupuesto propio para dejar espacio a la respuesta. El proceso interno no se muestra ni se guarda en el historial.")
                         .stacklumeFont(.footnote).foregroundStyle(palette.textSecondary)
                 }
                 .padding(DesignSystem.Spacing.sm)

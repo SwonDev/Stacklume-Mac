@@ -40,12 +40,12 @@ enum AssistantActionPolicy {
     static func finalResponseDirective(for request: String, spanish: Bool) -> String {
         if AssistantResearchPlan.isPlanningRequest(request) {
             return spanish
-                ? "Responde AHORA al usuario en español con una propuesta concreta por componentes: Interfaz, Motor, Almacenamiento y Exportación/integración, más validación y distribución cuando correspondan. Explica la responsabilidad, la elección y una alternativa útil de cada componente. Cita las referencias [B…]/[W…], títulos y URL exactos del dossier; distingue Guardado, resultado Web y página leída. Si falta evidencia, indica qué sigue pendiente y avanza con una propuesta provisional razonada. La compatibilidad no está verificada salvo que una fuente leída la confirme. No inventes capacidades ni fuentes. Conserva las restricciones del usuario y termina con el siguiente paso concreto, sin pedir que repita la búsqueda. No razones más ni llames herramientas."
-                : "Answer NOW with a concrete component plan: Interface, Engine, Storage and Export/integration, plus validation and distribution when relevant. Explain responsibility, choice and a useful alternative for each component. Cite exact dossier [B…]/[W…] references, titles and URLs; distinguish Saved metadata, Web result and read page. Mark missing evidence and continue with a reasoned provisional proposal. Compatibility is not verified unless a read source confirms it. Preserve user constraints; finish with the next concrete step without asking the user to repeat the search. Do not reason further or call tools."
+                ? "Responde AHORA al usuario en español con una propuesta concreta por componentes: Interfaz, Motor, Almacenamiento y Exportación/integración, más validación y distribución cuando correspondan. Explica la responsabilidad, la elección y una alternativa útil de cada componente. Cita las referencias [B…]/[W…], títulos y URL exactos del dossier; distingue Guardado, resultado Web y página leída. Si falta evidencia, indica qué sigue pendiente y avanza con una propuesta provisional razonada. La compatibilidad no está verificada salvo que una fuente leída la confirme. No inventes capacidades ni fuentes. Conserva las restricciones del usuario y termina con el siguiente paso concreto, sin pedir que repita la búsqueda. Comprueba brevemente la evidencia y responde sin llamar más herramientas."
+                : "Answer NOW with a concrete component plan: Interface, Engine, Storage and Export/integration, plus validation and distribution when relevant. Explain responsibility, choice and a useful alternative for each component. Cite exact dossier [B…]/[W…] references, titles and URLs; distinguish Saved metadata, Web result and read page. Mark missing evidence and continue with a reasoned provisional proposal. Compatibility is not verified unless a read source confirms it. Preserve user constraints; finish with the next concrete step without asking the user to repeat the search. Briefly check the evidence and answer without further tool calls."
         }
         return spanish
-            ? "Responde AHORA al usuario en español, en UNA o dos frases, con lo que has hecho o encontrado. No razones más ni llames herramientas."
-            : "Answer the user NOW in one or two sentences with what you did or found. Don't reason further or call tools."
+            ? "Responde AHORA al usuario en español, en UNA o dos frases, con lo que has hecho o encontrado. Comprueba brevemente la evidencia y responde sin llamar más herramientas."
+            : "Answer the user NOW in one or two sentences with what you did or found. Briefly check the evidence and answer without further tool calls."
     }
 
     /// El formato por componentes corresponde a una propuesta de stack. Mencionar
@@ -238,7 +238,14 @@ enum AssistantActionPolicy {
     /// que una conversación normal tenga acceso innecesario a herramientas destructivas.
     /// Distingue pedir asesoramiento de ordenar mantenimiento. Una colección usada
     /// como fuente no es el objeto de «optimizar»; las órdenes explícitas se conservan.
-    static func requestsImprovementAdvice(_ request: String) -> Bool {
+    static func requestsImprovementAdvice(_ request: String, hasVisualContext: Bool = false) -> Bool {
+        if hasVisualContext && !AssistantResearchPlan.isPlanningRequest(request) {
+            let text = normalized(sanitizedUserInput(request))
+            let researchTerms = ["biblioteca", "enlace", "marcador", "recurso", "fuente", "internet", "web", "online",
+                                 "software", "programa", "modelo", "generacion", "library", "link", "bookmark",
+                                 "resource", "source", "model", "generation"]
+            if !containsAny(text, researchTerms) { return false }
+        }
         let tokens = normalized(sanitizedUserInput(request)).split {
             !$0.isLetter && !$0.isNumber
         }.map(String.init)
@@ -261,6 +268,15 @@ enum AssistantActionPolicy {
 
     static func requestsWorkflowAdvice(_ request: String) -> Bool {
         requestsImprovementAdvice(request) && !hasDirectLibraryMaintenanceObject(request)
+    }
+
+    static func requestsVisualInspection(_ request: String) -> Bool {
+        let text = normalized(sanitizedUserInput(request))
+        return !AssistantResearchPlan.isPlanningRequest(request)
+            && containsAny(text, ["imagen", "foto", "fotografia", "captura", "dibujo", "mitad", "izquierda",
+                                  "derecha", "color", "image", "photo", "picture", "screenshot", "left", "right"])
+            && !containsAny(text, ["biblioteca", "enlace", "marcador", "recurso", "fuente", "internet", "web", "online",
+                                  "library", "link", "bookmark", "resource", "source"])
     }
 
     private static func hasDirectLibraryMaintenanceObject(_ request: String) -> Bool {
@@ -291,8 +307,8 @@ enum AssistantActionPolicy {
             && containsAny(text, ["duplicad", "repetid", "optimiza", "limpia", "organiza toda", "dedup"])
     }
 
-    static func selectedTools(for request: String, hasLinkContext: Bool) -> [String] {
-        if AssistantResearchPlan.isPlanningRequest(request) || requestsImprovementAdvice(request) {
+    static func selectedTools(for request: String, hasLinkContext: Bool, hasVisualContext: Bool = false) -> [String] {
+        if AssistantResearchPlan.isPlanningRequest(request) || requestsImprovementAdvice(request, hasVisualContext: hasVisualContext) {
             let text = normalized(sanitizedUserInput(request))
             var tools = ["buscar_semantico", "buscar_biblioteca"]
             if AssistantResearchPlan.isPlanningRequest(request) || requestsWorkflowAdvice(request) {
@@ -410,18 +426,18 @@ enum AssistantActionPolicy {
             add("listar_enlaces")
         }
 
-        let mentionsLibrary = hasLinkContext || containsAny(text, [
+        let mentionsLibrary = (hasLinkContext && !hasVisualContext) || containsAny(text, [
             "mi biblioteca", "mis enlaces", "mis marcadores", "que tengo", "qué tengo",
             "guardado", "enlace", "marcador", "stacklume", "biblioteca", "bookmark",
         ])
         if (mentionsLibrary || containsAny(text, ["stack", "recursos", "fuentes", "desarrollar", "programar"])) && !asksWeb {
             add("buscar_semantico", "buscar_biblioteca")
         }
-        if hasLinkContext && tools.isEmpty { add("buscar_semantico", "buscar_biblioteca") }
+        if hasLinkContext && !hasVisualContext && tools.isEmpty { add("buscar_semantico", "buscar_biblioteca") }
 
         if !requestsModification(request) {
             tools.removeAll { assess(tool: $0, arguments: [:]).risk != .readOnly }
-            if tools.isEmpty { add("buscar_semantico", "buscar_biblioteca") }
+            if tools.isEmpty && !hasVisualContext { add("buscar_semantico", "buscar_biblioteca") }
         }
         return Array(tools.prefix(maximumSelectedTools))
     }

@@ -81,7 +81,7 @@ enum CollectionIconSuggester {
         \(sample)
         """
         if let response = await LocalAIRunner.shared.complete(
-            system: system, prompt: prompt, maxTokens: 48, enableThinking: false) {
+            system: system, prompt: prompt, maxTokens: 48, enableThinking: true) {
             let picks = parseSymbols(response)
             if !picks.isEmpty { return picks }
         }

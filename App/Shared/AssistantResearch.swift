@@ -738,7 +738,8 @@ struct AssistantResearchPlan: Equatable, Sendable {
     let request: String
     let contextRequest: String
     let isSoftwarePlanning: Bool
-    var requiresSourceResearch: Bool { isSoftwarePlanning || AssistantActionPolicy.requestsImprovementAdvice(contextRequest) }
+    let hasVisualContext: Bool
+    var requiresSourceResearch: Bool { isSoftwarePlanning || AssistantActionPolicy.requestsImprovementAdvice(contextRequest, hasVisualContext: hasVisualContext) }
     let isFollowUp: Bool
     let libraryQueries: [AssistantResearchQuery]
     let publicTopic: String
@@ -772,14 +773,15 @@ struct AssistantResearchPlan: Equatable, Sendable {
         return facet.title
     }
 
-    static func make(request raw: String, priorUserRequests: [String]) -> Self {
+    static func make(request raw: String, priorUserRequests: [String], hasVisualContext: Bool = false) -> Self {
         let request = AssistantActionPolicy.sanitizedUserInput(raw)
         let prior = priorUserRequests.suffix(12).map(AssistantActionPolicy.sanitizedUserInput)
         let planning = isPlanningRequest(request)
         var context = request
         var followUp = false
         var softwareFollowUp = false
-        if !planning,
+        if !planning, !(hasVisualContext && AssistantActionPolicy.requestsVisualInspection(request)
+                        && !isPlanningFollowUp(request, requiresExplicitContinuation: true)),
            isPlanningFollowUp(request, requiresExplicitContinuation: AssistantActionPolicy.requestsImprovementAdvice(request)),
            let anchor = prior.lastIndex(where: { isPlanningRequest($0) || AssistantActionPolicy.requestsImprovementAdvice($0) }),
            prior.distance(from: anchor, to: prior.endIndex) <= 5 {
@@ -800,13 +802,13 @@ struct AssistantResearchPlan: Equatable, Sendable {
             let facets = requested.count >= 3 ? requested : defaults + requested.filter { !defaults.contains($0) }
             queries = groupedQueries(facets: facets, topic: localTopic, maximum: 6, publicSearch: false)
         } else {
-            let needsLibrary = AssistantActionPolicy.requestsImprovementAdvice(context)
-                || AssistantActionPolicy.selectedTools(for: context, hasLinkContext: false)
+            let needsLibrary = AssistantActionPolicy.requestsImprovementAdvice(context, hasVisualContext: hasVisualContext)
+                || AssistantActionPolicy.selectedTools(for: context, hasLinkContext: false, hasVisualContext: hasVisualContext)
                     .contains { $0 == "buscar_semantico" || $0 == "buscar_biblioteca" }
             queries = needsLibrary ? [.init(facet: .overview, text: followUp ? context : request)] : []
         }
         return .init(request: request, contextRequest: context, isSoftwarePlanning: isPlan,
-                     isFollowUp: followUp, libraryQueries: queries, publicTopic: topic)
+                     hasVisualContext: hasVisualContext, isFollowUp: followUp, libraryQueries: queries, publicTopic: topic)
     }
 
     /// Los huecos se buscan primero; una consulta adicional contrasta las alternativas.

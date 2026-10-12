@@ -1,6 +1,7 @@
 import Foundation
 import OSLog
 import MLXLLM
+import MLXVLM
 import MLXLMCommon
 import MLXHuggingFace
 import HuggingFace
@@ -23,11 +24,11 @@ private let aiLog = Logger(subsystem: "com.swondev.stacklume", category: "LocalA
 final class LocalAIRunner {
     static let shared = LocalAIRunner()
 
-    // Modelo LIQUID elegido por el usuario para Mac: LFM2.5-8B-A1B (MoE 8B/1B activo),
-    // MLX 8-bit (~8.4 GB). Se conserva el modelo elegido y se limita la caché auxiliar.
-    static let modelID = "LiquidAI/LFM2.5-8B-A1B-MLX-8bit"
-    static let modelDisplayName = "LFM2.5-8B-A1B (Liquid)"
-    static let approxDownloadGB = 8.4
+    private(set) var selectedModel = LocalAIModel.selected(
+        rawValue: UserDefaults.standard.string(forKey: LocalAIModel.selectionKey))
+    static var modelID: String { shared.selectedModel.repositoryID }
+    static var modelDisplayName: String { shared.selectedModel.displayName }
+    static var approxDownloadGB: Double { shared.selectedModel.downloadGB }
 
     enum State: Equatable {
         case notLoaded
@@ -59,11 +60,31 @@ final class LocalAIRunner {
     }
     private var unloadWhenIdle = false
     private var embeddingSearchReservations = 0
+    private var modelSelectionReservations = Set<UUID>()
     @ObservationIgnored private var conversationRounds = Set<UUID>() {
         didSet { synchronizeEmbeddingWorkload(); scheduleIdleRelease() }
     }
     private var hasActiveInference: Bool {
         isGenerating || oneShotRequests > 0 || !conversationRounds.isEmpty
+    }
+    var canChangeModel: Bool { !isBusy && !hasActiveInference && embeddingSearchReservations == 0 && modelSelectionReservations.isEmpty }
+
+    func reserveSelectedModel() -> UUID {
+        let id = UUID()
+        modelSelectionReservations.insert(id)
+        return id
+    }
+    func releaseSelectedModel(_ id: UUID) { modelSelectionReservations.remove(id) }
+
+    @discardableResult
+    func selectModel(_ model: LocalAIModel) -> Bool {
+        guard canChangeModel else { return false }
+        guard selectedModel != model else { return true }
+        unload()
+        selectedModel = model
+        UserDefaults.standard.set(model.rawValue, forKey: LocalAIModel.selectionKey)
+        loadAdmission.explicitRequest(hasPendingAttempt: false)
+        return true
     }
 
     /// Flag de "descargado por completo", KEY POR MODELO: al cambiar de modelID, la clave
@@ -208,17 +229,16 @@ final class LocalAIRunner {
     }
 
     /// Carpeta propia donde se descarga el modelo si no se encuentra ya instalado.
-    static func ownModelDirectory() -> URL {
+    static func ownModelDirectory(for model: LocalAIModel? = nil) -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let name = modelID.split(separator: "/").last.map(String.init) ?? "model"
-        return base.appendingPathComponent("StacklumeLLM/\(name)", isDirectory: true)
+        return (model ?? shared.selectedModel).directory(in: base)
     }
 
     /// Compatibilidad con el código existente (descarga/limpieza usan la carpeta propia).
     static func modelDirectory() -> URL { ownModelDirectory() }
 
     /// ¿Hay un modelo MLX completo en `dir`? (config + tokenizer + pesos).
-    static func isModelComplete(at dir: URL) -> Bool {
+    static func isModelComplete(at dir: URL, for model: LocalAIModel? = nil) -> Bool {
         let fm = FileManager.default
         let config = dir.appendingPathComponent("config.json")
         guard fm.fileExists(atPath: config.path) else { return false }
@@ -226,22 +246,40 @@ final class LocalAIRunner {
             || fm.fileExists(atPath: dir.appendingPathComponent("tokenizer.model").path)
         let entries = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
         let hasWeights = entries.contains { $0.hasSuffix(".safetensors") }
-        return hasTokenizer && hasWeights
+        guard hasTokenizer && hasWeights else { return false }
+        let selected = model ?? shared.selectedModel
+        if selected.supportsImages {
+            guard let data = try? BoundedFileReader.read(config, maximumBytes: 2 * 1_024 * 1_024),
+                  let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  info["vision_config"] is [String: Any],
+                  fm.fileExists(atPath: dir.appendingPathComponent("preprocessor_config.json").path) else { return false }
+        }
+        let index = dir.appendingPathComponent("model.safetensors.index.json")
+        if fm.fileExists(atPath: index.path) {
+            guard let data = try? BoundedFileReader.read(index, maximumBytes: 8 * 1_024 * 1_024),
+                  let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let map = info["weight_map"] as? [String: String], !map.isEmpty,
+                  Set(map.values).allSatisfy({ !$0.contains("/") && !$0.contains("\\") && $0.hasSuffix(".safetensors") && fm.fileExists(atPath: dir.appendingPathComponent($0).path) }) else { return false }
+        }
+        return true
     }
 
     /// Resuelve de dónde cargar el modelo: 1) LM Studio del usuario, 2) caché de
     /// HuggingFace, 3) carpeta propia. `nil` si no está en ninguna (habrá que descargar).
-    static func installedModelDirectory() -> URL? {
+    static func installedModelDirectory(for model: LocalAIModel? = nil) -> URL? {
+        let selected = model ?? shared.selectedModel
+        let modelID = selected.repositoryID
         let home = FileManager.default.homeDirectoryForCurrentUser
         let lmStudio = home.appendingPathComponent(".lmstudio/models/\(modelID)", isDirectory: true)
-        if isModelComplete(at: lmStudio) { return lmStudio }
+        if isModelComplete(at: lmStudio, for: selected) { return lmStudio }
         let hfName = "models--" + modelID.replacingOccurrences(of: "/", with: "--")
         let snapshots = home.appendingPathComponent(".cache/huggingface/hub/\(hfName)/snapshots", isDirectory: true)
         if let subs = try? FileManager.default.contentsOfDirectory(at: snapshots, includingPropertiesForKeys: nil),
-           let snap = subs.first(where: { isModelComplete(at: $0) }) {
+           let snap = subs.first(where: { (selected.revision == nil || $0.lastPathComponent == selected.revision) && isModelComplete(at: $0, for: selected) }) {
             return snap
         }
-        if isModelComplete(at: ownModelDirectory()) { return ownModelDirectory() }
+        let own = ownModelDirectory(for: selected)
+        if isModelComplete(at: own, for: selected) { return own }
         return nil
     }
 
@@ -261,6 +299,11 @@ final class LocalAIRunner {
         if let container { scheduleIdleRelease(); return container }
         if let attempt = loadAttempt { return await attempt.value() }
         guard !loadAdmission.isBlocked else { return nil }
+        let model = selectedModel
+        guard !model.supportsImages || Self.physicalMemoryGB >= model.minimumMemoryGB else {
+            state = .failed("Este modelo necesita un Mac con al menos 16 GB de memoria. Puedes elegir otro modelo en Ajustes › IA.")
+            return nil
+        }
 
         let control = LocalModelLoadControl()
         let identifier = UUID()
@@ -286,7 +329,7 @@ final class LocalAIRunner {
         loadAttempt = attempt
         attempt.register { [weak self] in
             guard let self else { return nil }
-            return await self.prepareModel(attempt: attempt, policy: policy, memoryBudget: memoryBudget, observer: observer)
+            return await self.prepareModel(model: model, attempt: attempt, policy: policy, memoryBudget: memoryBudget, observer: observer)
         }
         let result = await attempt.value()
         // La reserva sigue publicada mientras el loader y sus hijas se drenan.
@@ -294,7 +337,7 @@ final class LocalAIRunner {
         return result
     }
 
-    private func prepareModel(attempt: LocalModelLoadAttempt<ModelContainer>, policy: ModelLoadingPolicy,
+    private func prepareModel(model: LocalAIModel, attempt: LocalModelLoadAttempt<ModelContainer>, policy: ModelLoadingPolicy,
                               memoryBudget: Int, observer: OneShotObserver?) async -> ModelContainer? {
         do {
             try attempt.control.check(pressure: Self.memoryPressureLevel)
@@ -320,13 +363,13 @@ final class LocalAIRunner {
             // Si el modelo ya está instalado (LM Studio / HF / carpeta propia), cargar
             // desde ahí SIN descargar. Si no, descargar a la carpeta propia.
             let dir: URL
-            if let installed = Self.installedModelDirectory() {
+            if let installed = Self.installedModelDirectory(for: model) {
                 dir = installed
                 isDownloaded = true
-                aiLog.info("Modelo Liquid encontrado en \(installed.path, privacy: .public)")
+                aiLog.info("Modelo local encontrado")
             } else {
-                let target = Self.ownModelDirectory()
-                _ = try await ModelDownloader().download(repoID: Self.modelID, to: target) { fraction in
+                let target = Self.ownModelDirectory(for: model)
+                _ = try await ModelDownloader().download(repoID: model.repositoryID, revision: model.revision, to: target) { fraction in
                     Task { @MainActor in
                         guard self.loadAttempt?.id == attempt.id, attempt.control.terminalError == nil,
                               case .downloading = self.state else { return }
@@ -343,7 +386,7 @@ final class LocalAIRunner {
             try await EmbeddingGemmaRuntime.shared.releaseModelMemory()
             try attempt.control.check(pressure: Self.memoryPressureLevel)
             Memory.clearCache()
-            let result = try await Self.loadLocal(directory: dir, policy: policy)
+            let result = try await Self.loadLocal(directory: dir, vision: model.supportsImages, policy: policy)
             try attempt.control.checkResidentPressure(pressure: Self.memoryPressureLevel,
                 workingSetIsSafe: { Self.loadingMemoryFits(budget: memoryBudget) })
             guard attempt.canPublish(activeID: loadAttempt?.id), !isDeactivated, !policy.isCancelled else { throw CancellationError() }
@@ -387,18 +430,21 @@ final class LocalAIRunner {
     /// Solicita prioridad background para la carga fuera del MainActor. La policy
     /// se instala dentro del task detached y acota los grupos del SDK; la prioridad
     /// no fija núcleos ni garantiza fluidez. Los 256 MiB son un objetivo, no un cap.
-    nonisolated private static func loadLocal(directory: URL, policy: ModelLoadingPolicy) async throws -> ModelContainer {
+    nonisolated private static func loadLocal(directory: URL, vision: Bool, policy: ModelLoadingPolicy) async throws -> ModelContainer {
         try await LocalModelLoadAttempt<ModelContainer>.loadDetached(cancelPolicy: { policy.cancel() }) {
             try await ModelLoadingPolicy.withPolicy(policy) {
-                try await loadModelContainer(from: directory, using: #huggingFaceTokenizerLoader())
+                if vision {
+                    try await LocalVisionModelFactory.shared.loadContainer(from: directory, using: #huggingFaceTokenizerLoader())
+                } else {
+                    try await LLMModelFactory.shared.loadContainer(from: directory, using: #huggingFaceTokenizerLoader())
+                }
             }
         }
     }
 
     nonisolated private static func loadingMemoryFits(budget: Int) -> Bool {
         let memory = Memory.snapshot()
-        // El mayor grupo del modelo elegido ocupa 378 MiB. Reservar 512 MiB
-        // evita empezar el siguiente grupo pegado al presupuesto del intento.
+        // Reserva adicional para el siguiente grupo y sus buffers temporales.
         let reserve = 512 * 1_024 * 1_024
         return budget > reserve && memory.activeMemory <= budget - reserve
             && memory.cacheMemory <= budget - reserve - memory.activeMemory
@@ -411,19 +457,9 @@ final class LocalAIRunner {
         Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
     }
 
-    /// Ventana de contexto de LFM2.5-8B configurada según la RAM de esta máquina.
-    /// Los pesos MLX de 8 bits ocupan aproximadamente 8.4 GB; `maxKVSize` acota
-    /// el crecimiento de la caché de contexto. Esta tabla es la
-    /// FUENTE ÚNICA de `maxKVSize`: el modelo admite 128k y su KV-cache es ligero
-    /// (arquitectura híbrida: 18 capas conv + solo 6 de atención GQA de 24).
+    /// Límite de caché de contexto del modelo seleccionado según la RAM física.
     static var contextWindowTokens: Int {
-        switch physicalMemoryGB {
-        case 20...:      return 131072   // ≥24 GB: contexto COMPLETO de 128k.
-        case 14.5..<20:  return 65536    // ≈16 GB: 64k.
-        case 7.5..<14.5: return 32768    // ≈8–12 GB: 32k.
-        case 5.5..<7.5:  return 8192     // ≈6 GB.
-        default:         return 4096     // ≤4 GB.
-        }
+        shared.selectedModel.contextTokens(memoryGB: physicalMemoryGB)
     }
 
     /// Etiqueta breve de la ventana de contexto, p. ej. «128k tokens de contexto».
@@ -435,7 +471,7 @@ final class LocalAIRunner {
         let maxKV = contextWindowTokens
         let kvBits: Int? = lowRAM ? 8 : nil
         let capped = lowRAM ? min(maxTokens, 1536) : maxTokens
-        aiLog.info("Autoconfig LFM2.5 — RAM≈\(String(format: "%.1f", gb))GB, maxKV=\(maxKV), kvBits=\(kvBits ?? 0), maxTokens=\(capped)")
+        let liquid = shared.selectedModel == .liquid
         // Parámetros OFICIALES de LiquidAI para LFM2.5 (no los de Qwen): temperature 0.2,
         // top_k 80, repetition_penalty 1.05. Más deterministas → tool calling más fiable.
         return GenerateParameters(
@@ -443,11 +479,11 @@ final class LocalAIRunner {
             maxKVSize: maxKV,
             kvBits: kvBits,
             quantizedKVStart: kvBits == nil ? 0 : 512,
-            temperature: 0.2,
-            topP: 1.0,
-            topK: 80,
+            temperature: liquid ? 0.2 : 0.6,
+            topP: liquid ? 1.0 : 0.95,
+            topK: liquid ? 80 : 20,
             minP: 0.0,
-            repetitionPenalty: 1.05,
+            repetitionPenalty: liquid ? 1.05 : 1.0,
             prefill: .init(stepSize: 512, chunking: .remainder)
         )
     }
@@ -455,9 +491,8 @@ final class LocalAIRunner {
     /// Genera una respuesta one-shot (sin historial ni herramientas) con el modelo
     /// ya cargado. Para sugerencias/clasificación. Devuelve nil si no está listo.
     ///
-    /// Una sesión directa del LFM elegido recibe el prefijo vacío contrastado por
-    /// LiquidSessionConfiguration; su plantilla no interpreta enable_thinking.
-    /// La sesión con pensamiento conserva íntegra la entrada habitual del modelo.
+    /// El pensamiento tiene una reserva propia; solo la respuesta final sale de
+    /// esta frontera. El procesador del modelo conserva sus medios y su tokenizador.
     func complete(system: String, prompt: String, maxTokens: Int = 500,
                   enableThinking: Bool = true, observer: OneShotObserver? = nil) async -> String? {
         while embeddingSearchReservations > 0 || !conversationRounds.isEmpty {
@@ -475,22 +510,38 @@ final class LocalAIRunner {
         guard let container = await ensureReady(observer: observer) else { return nil }
         guard !Task.isCancelled else { return nil }
         let t0 = Date()
-        let parameters = Self.recommendedParameters(maxTokens: maxTokens)
+        let parameters = Self.recommendedParameters(maxTokens: enableThinking ? AssistantSessionPolicy.reasonedGenerationTokens(answerTokens: maxTokens) : maxTokens)
         let selectedModelID = Self.modelID
+        let reasoningPrefix = enableThinking && selectedModel.primesReasoning ? "<think>" : ""
+        let templateContext: [String: any Sendable]? = selectedModel.templateContext(thinking: enableThinking)
         let task = Task.detached { [self] () -> String? in
             do {
                 let result: String? = try await LiquidSessionConfiguration.withSessionContainer(
                     for: container, modelID: selectedModelID, thinking: enableThinking, observer: observer
                 ) { sessionContainer in
+                    let context = templateContext
+                    let prepared = try await sessionContainer.prepare(input: UserInput(
+                        chat: [.system(system), .user(prompt)], additionalContext: context))
+                    guard let limit = parameters.maxKVSize,
+                          let generationLimit = AssistantSessionPolicy.generationLimit(
+                            requestedTokens: parameters.maxTokens ?? maxTokens,
+                            promptTokens: prepared.text.tokens.size, contextTokens: limit) else { return nil }
+                    var boundedParameters = parameters
+                    boundedParameters.maxTokens = generationLimit
+                    let components = enableThinking ? try await LiquidSessionConfiguration.reasoningComponents(
+                        for: sessionContainer, modelID: selectedModelID, totalTokens: generationLimit, answerTokens: maxTokens
+                    ) : GenerationComponents()
                     let session = ChatSession(
                         sessionContainer,
                         instructions: system,
-                        generateParameters: parameters,
-                        additionalContext: enableThinking ? nil : ["enable_thinking": false]
+                        generateParameters: boundedParameters,
+                        components: components,
+                        additionalContext: context
                     )
-                    var output = ""
+                    var output = reasoningPrefix
                     var cancelled = false
                     var rejectedToolCall = false
+                    var reachedLengthLimit = false
                     var receivedEvent = false
                     do {
                         for try await item in session.streamDetails(to: prompt, images: [], videos: []) {
@@ -499,6 +550,9 @@ final class LocalAIRunner {
                                 LiquidSessionConfiguration.observe(observer, at: .firstStreamEvent)
                             }
                             if let info = item.info {
+                                reachedLengthLimit = AssistantSessionPolicy.reachedTokenLimit(
+                                    generatedTokens: info.generationTokenCount, maximumTokens: generationLimit,
+                                    stopWasLength: info.stopReason == .length)
                                 LiquidSessionConfiguration.observe(observer, at: .completionInfo, completion: info)
                             }
                             // El primer evento confirma que el productor ya adquirió su caché.
@@ -523,7 +577,7 @@ final class LocalAIRunner {
                     }
                     await session.synchronize()
                     LiquidSessionConfiguration.observe(observer, at: .sessionSynchronized)
-                    return cancelled || rejectedToolCall ? nil : output
+                    return cancelled || rejectedToolCall || reachedLengthLimit ? nil : output
                 }
                 LiquidSessionConfiguration.observe(observer, at: .leaseReturned)
                 return result
@@ -540,7 +594,7 @@ final class LocalAIRunner {
         let dt = Date().timeIntervalSince(t0)
         let cps = Int(Double(out?.count ?? 0) / max(dt, 0.1))
         AgentDiagnostics.shared.log("COMPLETE: \(out?.count ?? -1) chars en \(String(format: "%.1f", dt))s (~\(cps) chars/s, think=\(enableThinking))")
-        return out
+        return out.map { AssistantResearchAnswer.splitGeneratedText($0).answer }
     }
 
     /// Libera el modelo de la RAM sin tocar la decisión de (des)activación. Lo usa el
@@ -569,6 +623,7 @@ final class LocalAIRunner {
 
     /// Borra los archivos descargados del modelo (libera espacio).
     func deleteDownload() {
+        guard canChangeModel else { return }
         unload()
         try? FileManager.default.removeItem(at: Self.modelDirectory())
         isDownloaded = false

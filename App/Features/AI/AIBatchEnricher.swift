@@ -385,7 +385,7 @@ enum AIBatchEnricher {
             + "el título traducido, en UNA línea, sin comillas ni explicaciones. Conserva nombres "
             + "propios, marcas, rutas tipo «owner/repo» y términos técnicos sin traducirlos."
         guard let raw = await LocalAIRunner.shared.complete(
-            system: system, prompt: "Título: \(original)", maxTokens: 160, enableThinking: false) else { return }
+            system: system, prompt: "Título: \(original)", maxTokens: 160, enableThinking: true) else { return }
         guard link.modelContext != nil else { return }
         let cleaned = cleanTranslatedTitle(raw)
         // Válido solo si NO está vacío, ya NO es script no latino (no es un eco), cambió algo y es

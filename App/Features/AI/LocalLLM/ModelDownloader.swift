@@ -26,10 +26,11 @@ actor ModelDownloader {
     }
 
     /// Lista los archivos del repo (con tamaño) vía la API pública de HF.
-    func fileList(repoID: String) async throws -> [RemoteFile] {
+    func fileList(repoID: String, revision: String? = nil) async throws -> [RemoteFile] {
         guard Self.isValidRepositoryID(repoID),
+              revision == nil || Self.isValidRevision(revision!),
               let encodedRepo = repoID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-              let url = URL(string: "https://huggingface.co/api/models/\(encodedRepo)?blobs=true")
+              let url = URL(string: "https://huggingface.co/api/models/\(encodedRepo)\(revision.map { "/revision/" + $0 } ?? "")?blobs=true")
         else {
             throw DownloadError.badFileList
         }
@@ -68,9 +69,9 @@ actor ModelDownloader {
 
     /// Descarga el modelo al directorio `dir` (creándolo). Reporta progreso 0–1
     /// ponderado por bytes. Salta archivos ya descargados con el tamaño correcto.
-    func download(repoID: String, to dir: URL,
+    func download(repoID: String, revision: String? = nil, to dir: URL,
                   progress: @Sendable @escaping (Double) -> Void) async throws -> URL {
-        let files = try await fileList(repoID: repoID)
+        let files = try await fileList(repoID: repoID, revision: revision)
         guard !files.isEmpty else { throw DownloadError.badFileList }
         try PrivateFileIO.ensureDirectory(dir)
 
@@ -104,7 +105,7 @@ actor ModelDownloader {
             guard let encodedRepo = repoID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
                   let encodedName = file.name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
                   let fileURL = URL(
-                    string: "https://huggingface.co/\(encodedRepo)/resolve/main/\(encodedName)"
+                    string: "https://huggingface.co/\(encodedRepo)/resolve/\(revision ?? "main")/\(encodedName)"
                   )
             else {
                 throw DownloadError.fileFailed(file.name)
@@ -156,6 +157,10 @@ actor ModelDownloader {
         return parts.allSatisfy {
             !$0.isEmpty && String($0).unicodeScalars.allSatisfy(allowed.contains)
         }
+    }
+
+    private static func isValidRevision(_ revision: String) -> Bool {
+        revision.count == 40 && revision.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
     private static func isSafeRelativePath(_ path: String) -> Bool {

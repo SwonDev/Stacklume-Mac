@@ -176,7 +176,7 @@ struct TopicOrganizeView: View {
             .joined(separator: "\n")
         let langName = lang == "en" ? "inglés" : "español"
         let system = "Eres un bibliotecario. Devuelve SOLO un nombre de colección de 1 a 3 palabras en \(langName) que resuma el tema común de estos enlaces. Sin comillas, sin punto final, sin explicación."
-        guard let raw = await runner.complete(system: system, prompt: titles, maxTokens: 80, enableThinking: false) else {
+        guard let raw = await runner.complete(system: system, prompt: titles, maxTokens: 80, enableThinking: true) else {
             return fallback
         }
         return Self.cleanName(raw, fallback: fallback)

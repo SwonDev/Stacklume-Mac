@@ -670,6 +670,15 @@ struct AssistantResearchTests {
         #expect(initial.first?.request.contains("## Despliegue") == true)
     }
 
+    @Test("El presupuesto conserva el prompt y sus evidencias antes del veredicto")
+    func boundsOneShotBeforeEvidenceEviction() {
+        #expect(AssistantSessionPolicy.generationLimit(requestedTokens: 8192, promptTokens: 4000, contextTokens: 8192) == 4160)
+        #expect(AssistantSessionPolicy.generationLimit(requestedTokens: 8192, promptTokens: 8200, contextTokens: 8192) == nil)
+        #expect(AssistantSessionPolicy.generationLimit(requestedTokens: 8192, promptTokens: 7800, contextTokens: 8192) == nil)
+        #expect(AssistantSessionPolicy.generationLimit(requestedTokens: 256, promptTokens: 7800, contextTokens: 8192) == 256)
+        #expect(AssistantSessionPolicy.generationLimit(requestedTokens: 2048, promptTokens: 4000, contextTokens: 16384) == 2048)
+    }
+
     @Test("La respuesta directa respeta pensamiento e identidad exacta del modelo")
     func directSessionModelAndThinkingGates() {
         #expect(AssistantSessionPolicy.directResponsePrefix(modelID: "LiquidAI/LFM2.5-8B-A1B-MLX-8bit", directoryName: "LFM2.5-8B-A1B-MLX-8bit", thinking: false) == "<think></think>\n")

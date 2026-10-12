@@ -5,6 +5,7 @@ import SwiftData
 import Foundation
 import StacklumeCore
 import StacklumeDesignSystem
+import UniformTypeIdentifiers
 
 /// Buzón para enviar una pregunta al asistente desde OTRAS partes de la app (p. ej. el
 /// botón «Preguntar a la IA» de la ficha de un enlace). La sección IA lo consume al
@@ -61,6 +62,10 @@ struct AIChatView: View {
     @State private var chat: LiquidConversation?
     @State private var runner = LocalAIRunner.shared
     @State private var input = ""
+    @State private var showImageImporter = false
+    @State private var pendingImage: Data?
+    @State private var preparingImage = false
+    @State private var imageNotice: String?
     @State private var showSettings = false
     @State private var showOrganize = false
     @State private var showTopics = false
@@ -171,6 +176,25 @@ struct AIChatView: View {
         .onChange(of: assistantInbox?.activeSection) { _, newValue in
             chat?.activeSection = newValue
         }
+        .onChange(of: runner.selectedModel) { _, model in
+            if !model.supportsImages { pendingImage = nil }
+        }
+        .fileImporter(isPresented: $showImageImporter, allowedContentTypes: [.image]) { result in
+            guard case .success(let url) = result else { return }
+            preparingImage = true
+            imageNotice = nil
+            Task {
+                let data = await Task.detached(priority: .userInitiated) {
+                    let access = url.startAccessingSecurityScopedResource()
+                    defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    guard let raw = try? BoundedFileReader.read(url, maximumBytes: 32 * 1_024 * 1_024) else { return nil as Data? }
+                    return CoverImage.downscaledJPEG(raw, maxDimension: 1_024, quality: 0.9, minimumDimension: 32)
+                }.value
+                preparingImage = false
+                if runner.selectedModel.supportsImages { pendingImage = data }
+                if data == nil { imageNotice = "No se pudo preparar esa imagen. Elige una imagen de hasta 32 MB, sin lados diminutos ni proporciones extremas." }
+            }
+        }
     }
 
     /// Consume una pregunta pendiente del buzón: si el modelo está listo la envía; si no,
@@ -188,10 +212,10 @@ struct AIChatView: View {
     private var notReady: some View {
         EmptyStateView(
             icon: "sparkles",
-            title: "Asistente Liquid",
+            title: "Asistente local",
             message: runner.isBusy
                 ? "Preparando el modelo…"
-                : "Carga el modelo Liquid para chatear con tu biblioteca y dejar que la organice por ti.",
+                : "Carga \(runner.selectedModel.displayName) para conversar con tu biblioteca.",
             actionTitle: runner.isBusy ? nil : "Cargar modelo",
             action: runner.isBusy ? nil : { Task { await runner.ensureReady(userInitiated: true) } }
         )
@@ -431,7 +455,26 @@ struct AIChatView: View {
 
     private func inputBar(_ chat: LiquidConversation) -> some View {
         let fieldShape = RoundedRectangle(cornerRadius: 13, style: .continuous)
-        return HStack(spacing: DesignSystem.Spacing.sm) {
+        return VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
+            if let pendingImage, let image = CoverImage.decodedThumbnail(pendingImage, maxDimension: 96) {
+                HStack(spacing: DesignSystem.Spacing.sm) {
+                    Image(nsImage: image).resizable().scaledToFit().frame(width: 60, height: 60)
+                    Text("Imagen adjunta · se analiza en este Mac").stacklumeFont(.caption).foregroundStyle(palette.textSecondary)
+                    Spacer(minLength: 0)
+                    Button { self.pendingImage = nil } label: { Image(systemName: "xmark.circle") }
+                        .buttonStyle(.plain).themedHelp("Quitar imagen").accessibilityLabel("Quitar imagen")
+                }
+            }
+            if let imageNotice {
+                Text(imageNotice).stacklumeFont(.caption).foregroundStyle(palette.textSecondary)
+            }
+            HStack(spacing: DesignSystem.Spacing.sm) {
+            if runner.selectedModel.supportsImages {
+                Button { showImageImporter = true } label: { Image(systemName: "photo.badge.plus") }
+                    .stacklumeButton(prominent: false, compact: true)
+                    .disabled(chat.isResponding || preparingImage)
+                    .themedHelp("Adjuntar una imagen").accessibilityLabel("Adjuntar imagen")
+            }
             TextField("Pregunta a tu asistente…", text: $input, axis: .vertical)
                 .textFieldStyle(.plain)
                 .focused($inputFocused)
@@ -465,9 +508,10 @@ struct AIChatView: View {
                 }
                 .stacklumeButton(compact: true)
                 .foregroundStyle(palette.textPrimary)
-                .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled((input.trimmingCharacters(in: .whitespaces).isEmpty && pendingImage == nil) || preparingImage)
                 .themedHelp("Enviar")
                 .accessibilityLabel("Enviar mensaje")
+            }
             }
         }
         .padding(DesignSystem.Spacing.sm)
@@ -485,9 +529,18 @@ struct AIChatView: View {
 
     private func sendMessage(_ chat: LiquidConversation) {
         let text = input.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, !chat.isResponding else { return }
-        chat.send(text)
+        guard !chat.isResponding, !preparingImage, !text.isEmpty || pendingImage != nil else { return }
+        var imageID: String?
+        if let pendingImage {
+            guard runner.selectedModel.supportsImages else { return }
+            do { imageID = try AssistantChatImageStore.save(pendingImage) }
+            catch { imageNotice = "No se pudo guardar la imagen. Tu mensaje se conserva para reintentarlo."; return }
+        }
+        let prompt = text.isEmpty ? "Describe esta imagen." : text
+        chat.send(prompt + (imageID == nil ? "" : "\n[Imagen adjunta]"), imageID: imageID)
         input = ""
+        pendingImage = nil
+        imageNotice = nil
         inputFocused = true
     }
 }
