@@ -1738,6 +1738,26 @@ struct AssistantResearchTests {
         #expect(dossier.references.isEmpty)
     }
 
+    @Test("La lectura prioriza el tema público sin prestar URLs de la biblioteca")
+    @MainActor
+    func readsRelevantPublicPagesFirst() async throws {
+        let plan = AssistantResearchPlan.make(request: "Quiero optimizar generación 3D local con IA", priorUserRequests: [])
+        #expect(!plan.isSoftwarePlanning && plan.requiresSourceResearch)
+        let irrelevant = AssistantResearchSource(title: "Inferencia local de lenguaje", url: "https://llm.example.org/guide", bookmarkID: nil,
+            summary: "Guía para optimizar memoria de modelos de texto.", evidence: "", origin: .web, facets: [.overview], collection: nil, tags: [])
+        let first3D = AssistantResearchSource(title: "Generación 3D local con IA", url: "https://geometry.example.org/first", bookmarkID: nil,
+            summary: "Medir la generación 3D local.", evidence: "", origin: .web, facets: [.overview], collection: nil, tags: [])
+        let second3D = AssistantResearchSource(title: "Generación 3D local con IA", url: "https://mesh.example.org/second", bookmarkID: nil,
+            summary: "Medir la generación 3D local.", evidence: "", origin: .web, facets: [.overview], collection: nil, tags: [])
+        var readURLs: [String] = []
+        _ = try await AssistantResearchCoordinator.collect(plan: plan, webEnabled: true,
+            librarySearch: { _ in .init(sources: [], candidateCount: 0) },
+            webSearch: { _ in .init(sources: [irrelevant, first3D, second3D], candidateCount: 3) },
+            readPage: { url in readURLs.append(url); return .init(title: "Guía", url: url, text: "Contenido público") },
+            progress: { _ in })
+        #expect(readURLs == [first3D.url!, second3D.url!, irrelevant.url!])
+    }
+
     @Test("Al contrastar una fuente guardada solo se lee la URL exacta encontrada en web")
     @MainActor
     func readsPublicResultURL() async throws {
@@ -2089,7 +2109,7 @@ struct GenericResearchReviewTests {
         let draft = "Vivago permite generación 3D [B1]. Primero mide el consumo con una prueba pequeña."
         var repairs = 0
         let result = try await AssistantResearchAnswer.reviewAdvice(draft, plan: plan, spanish: true, sources: ["B1": source()]) { _ in
-            repairs += 1; return "No debería llamarse"
+            repairs += 1; return .init(text: "No debería llamarse")
         }
         #expect(result.issues.isEmpty)
         #expect(result.text == draft)
@@ -2106,11 +2126,11 @@ struct GenericResearchReviewTests {
             repairs += 1
             #expect(request.contains("Quiero optimizar generación 3D"))
             #expect(request.contains("página no leída"))
-            return "Vivago permite generación 3D [B1]. Conviene medir primero con una prueba pequeña."
+            return .init(text: "Vivago permite generación 3D [B1]. Conviene medir primero con una prueba pequeña.")
         }
         #expect(fixed.issues.isEmpty && repairs == 1 && fixed.rounds == 1)
         repairs = 0
-        let refused = try await AssistantResearchAnswer.reviewAdvice(bad, plan: plan, spanish: true, sources: ["B1": source()]) { _ in repairs += 1; return bad }
+        let refused = try await AssistantResearchAnswer.reviewAdvice(bad, plan: plan, spanish: true, sources: ["B1": source()]) { _ in repairs += 1; return .init(text: bad) }
         #expect(!refused.issues.isEmpty && repairs == 1)
         #expect(!refused.text.contains("Modly"))
         #expect(!refused.text.contains("ha sido validada"))
@@ -2122,10 +2142,170 @@ struct GenericResearchReviewTests {
         let task = Task {
             try await AssistantResearchAnswer.reviewAdvice("Utiliza Modly [B1].", plan: plan, spanish: true, sources: ["B1": source()]) { _ in
                 withUnsafeCurrentTask { $0?.cancel() }
-                return "Vivago permite generación 3D [B1]."
+                return .init(text: "Vivago permite generación 3D [B1].")
             }
         }
         do { _ = try await task.value; Issue.record("La cancelación debía propagarse") }
         catch is CancellationError { }
+    }
+}
+
+
+extension GenericResearchReviewTests {
+    @Test("La búsqueda y lectura posterior entra en el mismo mapa de citas")
+    func incorporatesNewReadSource() {
+        var registry = AssistantResearchTurnSources(["B1": source()])
+        let new = AssistantLinkReference(title: "Modly", url: "https://example.org/modly", summary: "Modly genera modelos 3D.", collection: nil, tags: [], origin: .web)
+        let answer = "Modly permite generar modelos 3D [W2]."
+        #expect(!AssistantResearchAnswer.adviceIssues(in: answer, spanish: true, sources: registry.sources).isEmpty)
+        #expect(registry.incorporate(.init("Resultado de búsqueda", references: [new])) == ["W2"])
+        #expect(registry.sources["W2"]?.pageWasRead == false)
+        let page = AssistantToolResult("Modly permite generar modelos 3D.", references: [new], didReadWebSource: true)
+        #expect(registry.incorporate(page) == ["W2"])
+        #expect(registry.sources["W2"]?.pageWasRead == true)
+        #expect(registry.sources["B1"]?.pageWasRead == false)
+        #expect(registry.context(ids: ["W2"], maximumCharacters: 900).contains("[W2]"))
+        #expect(registry.context(ids: ["W2"], maximumCharacters: 900).contains("Modly permite"))
+        #expect(AssistantResearchAnswer.adviceIssues(in: answer, spanish: true, sources: registry.sources).isEmpty)
+        for unsupported in ["Utiliza Modly [W99].", "Modly es una base de datos SQL [W2].", "Esta estrategia ha sido validada por la documentación oficial [W2]."] {
+            #expect(!AssistantResearchAnswer.adviceIssues(in: unsupported, spanish: true, sources: registry.sources).isEmpty)
+        }
+    }
+
+    @Test("Alias estables, lecturas exactas y registro acotado")
+    func stableAliasesAndReadReceipts() {
+        var registry = AssistantResearchTurnSources(["B1": source(), "W7": source()])
+        let same = AssistantLinkReference(title: "Vivago", url: "https://example.org/vivago", summary: nil, collection: nil, tags: [], origin: .web)
+        #expect(registry.incorporate(.init("Vivago permite generación 3D.", references: [same], didReadWebSource: true)) == ["B1"])
+        #expect(registry.sources["B1"]?.pageWasRead == true)
+        #expect(registry.sources["W7"]?.pageWasRead == false)
+        let others = (0..<70).map { AssistantLinkReference(title: "Recurso \($0)", url: "https://example.org/new/\($0)", summary: "Candidato", collection: nil, tags: [], origin: .web) }
+        let ids = registry.incorporate(.init("Una lectura no acredita múltiples páginas", references: others, didReadWebSource: true))
+        #expect(ids.first == "W8")
+        #expect(registry.sources.count == AssistantResearchDossier.maximumSources)
+        #expect(registry.sources["W8"]?.pageWasRead == false)
+        #expect(registry.context(ids: ids, maximumCharacters: 900).count <= 900)
+        #expect(registry.sources["B1"]?.evidence == "Vivago permite generación 3D.")
+    }
+
+    @Test("Una respuesta truncada se repara aunque sus citas sean válidas")
+    @MainActor
+    func rejectsTruncatedDraftAndRepair() async throws {
+        let plan = AssistantResearchPlan.make(request: "Quiero optimizar generación 3D", priorUserRequests: [])
+        let valid = "Vivago permite generación 3D [B1]."
+        var metrics: [AssistantResearchReviewMetrics] = []
+        var repairs = 0
+        let rejected = try await AssistantResearchAnswer.reviewAdvice(valid, plan: plan, spanish: true, sources: ["B1": source()], draftReachedLengthLimit: true, recordReview: { metrics.append($0) }) { _ in
+            repairs += 1
+            return .init(text: valid, reachedLengthLimit: true)
+        }
+        #expect(repairs == 1 && !rejected.issues.isEmpty)
+        #expect(metrics.count == 2 && metrics.allSatisfy(\.reachedLengthLimit))
+        #expect(metrics.allSatisfy { $0.unknownCitations == 0 && $0.sourceCount == 1 })
+        #expect(rejected.text != valid)
+        let repaired = try await AssistantResearchAnswer.reviewAdvice(valid, plan: plan, spanish: true, sources: ["B1": source()], draftReachedLengthLimit: true) { _ in .init(text: valid) }
+        #expect(repaired.text == valid && repaired.issues.isEmpty)
+    }
+}
+
+extension GenericResearchReviewTests {
+    @Test("Los fragmentos locales posteriores no se reparten entre recursos")
+    func keepsStructuredLocalEvidence() {
+        var registry = AssistantResearchTurnSources(["B1": source()])
+        let reference = AssistantLinkReference(title: "Modly", url: "https://example.org/modly", summary: "Candidato", collection: nil, tags: [], origin: .library)
+        let local = AssistantResearchSource(title: "Modly", url: reference.url, bookmarkID: UUID(), summary: "Candidato", evidence: "Modly ofrece una base de datos SQL.", origin: .library, facets: [.overview], collection: nil, tags: [])
+        let other = AssistantResearchSource(title: "Otro recurso", url: "https://example.org/other", bookmarkID: nil, summary: "Otro", evidence: "No corresponde a esta referencia", origin: .library, facets: [.overview], collection: nil, tags: [])
+        _ = registry.incorporate(.init("Texto agregado sin autoridad", references: [reference], researchSources: [local, other]))
+        #expect(registry.sources["B2"]?.evidence == local.evidence)
+        #expect(registry.sources["B2"]?.pageWasRead == false)
+        #expect(registry.sources.count == 2)
+        #expect(registry.sources["B1"]?.evidence.isEmpty == true)
+        #expect(AssistantResearchAnswer.adviceIssues(in: "Modly ofrece una base de datos SQL [B2].", spanish: true, sources: registry.sources).isEmpty)
+        var enriched = local
+        enriched.summary = String(repeating: "Resumen más rico. ", count: 110)
+        _ = registry.incorporate(.init("", references: [reference], researchSources: [enriched]))
+        #expect(registry.sources["B2"]?.summary == String(enriched.summary.prefix(1_800)))
+        #expect(registry.sources["B2"]?.evidence == local.evidence)
+    }
+
+    @Test("La reparación conserva primero el tema aunque el borrador cite una guía ajena")
+    @MainActor
+    func prioritizesRelevantRepairEvidence() async throws {
+        let plan = AssistantResearchPlan.make(request: "Quiero optimizar generación 3D local con IA", priorUserRequests: [])
+        let general = AssistantResearchSource(title: "Inferencia de lenguaje", url: "https://example.org/language", bookmarkID: nil,
+            summary: String(repeating: "Memoria de modelos de texto. ", count: 100), evidence: String(repeating: "Página leída. ", count: 200),
+            origin: .web, facets: [.overview], pageWasRead: true, collection: nil, tags: [])
+        let geometry = AssistantResearchSource(title: "Modly", url: "https://example.org/modly", bookmarkID: nil,
+            summary: "Modly genera modelos 3D localmente.", evidence: "", origin: .library, facets: [.overview], collection: nil, tags: [])
+        _ = try await AssistantResearchAnswer.reviewAdvice("Utiliza HerramientaInventada [W1].", plan: plan, spanish: true,
+                sources: ["W1": general, "B64": geometry], contextWindow: 8_192) { request in
+            let relevant = request.range(of: "[B64] Modly")!
+            let unrelated = request.range(of: "[W1] Inferencia de lenguaje")!
+            #expect(relevant.lowerBound < unrelated.lowerBound)
+            return .init(text: "Modly es un candidato para generar modelos 3D [B64]. Primero mide el consumo con una prueba pequeña.")
+        }
+    }
+
+    @Test("La reparación reserva pensamiento y respuesta dentro de 8K con dossier lleno")
+    @MainActor
+    func boundsJointRepairContext() async throws {
+        let plan = AssistantResearchPlan.make(request: "Quiero optimizar generación 3D", priorUserRequests: [])
+        let many = Dictionary(uniqueKeysWithValues: (1...64).map { index in
+            ("B\(index)", AssistantResearchSource(title: "Vivago", url: "https://example.org/vivago/\(index)", bookmarkID: nil,
+                summary: String(repeating: "Metadatos 😊漢字 ", count: 150), evidence: String(repeating: "Evidencia 😊漢字 ", count: 180),
+                origin: .library, facets: [.overview], pageWasRead: index == 64, collection: nil, tags: []))
+        })
+        let invalid = "Utiliza Modly [B64]. " + String(repeating: "BORRADOR 😊漢字 ", count: 500)
+        let result = try await AssistantResearchAnswer.reviewAdvice(invalid, plan: plan, spanish: true, sources: many, contextWindow: 8_192) { request in
+            let generation = AssistantSessionPolicy.reasonedGenerationTokens(answerTokens: AssistantContextBudget.outputTokens(contextWindow: 8_192))
+            #expect(request.utf8.count + generation + 1_024 <= 8_192)
+            #expect(request.contains("[B64]"))
+            #expect(request.contains("página leída"))
+            #expect(request.components(separatedBy: "[FIN_DATOS_NO_CONFIABLES]").count == 3)
+            return .init(text: "Conviene medir primero con una prueba pequeña y registrar el consumo de memoria.")
+        }
+        #expect(result.issues.isEmpty && result.rounds == 1)
+    }
+}
+
+extension GenericResearchReviewTests {
+    @Test("Los rótulos de una fuente y el término dimensional no son afirmaciones de producto")
+    func sourceLabelsAndDimensionalProse() {
+        let modly = AssistantResearchSource(title: "Modly", url: "https://example.org/modly", bookmarkID: nil,
+            summary: "Modly genera modelos 3D localmente.", evidence: "", origin: .library, facets: [.overview], collection: nil, tags: [])
+        let text = "### Modly\nModly es un candidato para generar modelos 3D [B1].\nEs un punto de partida 3D.\nEl contexto de inferencia no es de 3D."
+        #expect(AssistantResearchAnswer.adviceIssues(in: text, spanish: true, sources: ["B1": modly]).isEmpty)
+        #expect(!AssistantResearchAnswer.adviceIssues(in: "### Modly ofrece SQL [B1]", spanish: true, sources: ["B1": modly]).isEmpty)
+        #expect(!AssistantResearchAnswer.adviceIssues(in: "### QuantumMesh3D\nModly genera modelos [B1].", spanish: true, sources: ["B1": modly]).isEmpty)
+    }
+
+    @Test("Las dimensiones y medidas no se confunden con identidades de productos")
+    func measurementsAreNotProductNames() {
+        let modly = AssistantResearchSource(title: "Modly: Local AI 3D Model Generator for Desktop", url: "https://example.org/modly", bookmarkID: nil,
+            summary: "Modly genera modelos 3D localmente.", evidence: "", origin: .library, facets: [.overview], collection: nil, tags: [])
+        let valid = """
+        Modly es un candidato para generar modelos 3D [B1].
+        Primero registra el consumo con una prueba 3D pequeña.
+        En un Mac con 16GB de RAM, mide el consumo máximo y el tiempo.
+        Compara una entrada 512x512 con otra de mayor resolución.
+        """
+        let issues = AssistantResearchAnswer.adviceIssues(in: valid, spanish: true, sources: ["B1": modly])
+        #expect(issues.isEmpty)
+        let plain = AssistantResearchSource(title: "Modly", url: "https://example.org/modly", bookmarkID: nil,
+            summary: "Genera modelos localmente.", evidence: "", origin: .library, facets: [.overview], collection: nil, tags: [])
+        for name in ["QuantumMesh3D", "3DTool", "Python3.14", "3D", "16GB", "512x512"] {
+            #expect(!AssistantResearchAnswer.adviceIssues(in: "Utiliza \(name) [B1].", spanish: true, sources: ["B1": plain]).isEmpty)
+        }
+        for introduction in ["herramienta", "motor", "framework", "app", "aplicación", "tool", "engine", "application"] {
+            #expect(!AssistantResearchAnswer.adviceIssues(in: "La \(introduction) 3D es candidata [B1].", spanish: true, sources: ["B1": plain]).isEmpty)
+        }
+        #expect(!AssistantResearchAnswer.adviceIssues(in: "Backend: 3D gestiona usuarios [B1].", spanish: true, sources: ["B1": plain]).isEmpty)
+        #expect(!AssistantResearchAnswer.adviceIssues(in: "La herramienta «512x512» procesa la imagen [B1].", spanish: true, sources: ["B1": modly]).isEmpty)
+        for invalid in ["La herramienta 512x512 procesa la imagen [B1].", "512x512. Mide el consumo.", "Una entrada 512x512 y la herramienta 512x512 procesa la imagen [B1]."] {
+            #expect(!AssistantResearchAnswer.adviceIssues(in: invalid, spanish: true, sources: ["B1": modly]).isEmpty)
+        }
+        let unrelated = AssistantResearchSource(title: "Otra herramienta", url: "https://example.org/unrelated", bookmarkID: nil,
+            summary: "Requiere 16GB de RAM y una entrada 512x512.", evidence: "", origin: .library, facets: [.overview], collection: nil, tags: [])
+        #expect(AssistantResearchAnswer.adviceIssues(in: valid, spanish: true, sources: ["B1": modly, "B2": unrelated]).isEmpty)
     }
 }

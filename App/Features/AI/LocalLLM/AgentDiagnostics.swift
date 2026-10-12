@@ -93,4 +93,9 @@ final class AgentDiagnostics: @unchecked Sendable {
     func recordPersistence(_ event: PersistenceEvent) {
         healthLog.notice("history event=\(event.rawValue, privacy: .public)")
     }
+
+    func recordResearchReview(_ metrics: AssistantResearchReviewMetrics) {
+        let classes = metrics.issueClasses.map(\.rawValue).joined(separator: ",")
+        healthLog.info("research stage=\(metrics.stage.rawValue, privacy: .public) chars=\(metrics.characters, privacy: .public) sources=\(metrics.sourceCount, privacy: .public) read=\(metrics.readSourceCount, privacy: .public) unknownCitations=\(metrics.unknownCitations, privacy: .public) issues=\(metrics.issueCount, privacy: .public) classes=\(classes, privacy: .public) truncated=\(metrics.reachedLengthLimit, privacy: .public)")
+    }
 }

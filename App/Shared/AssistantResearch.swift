@@ -977,7 +977,7 @@ struct AssistantResearchSource: Equatable, Sendable {
     let title: String
     let url: String?
     let bookmarkID: UUID?
-    let summary: String
+    var summary: String
     var evidence: String
     let origin: AssistantLinkReference.Origin
     var facets: Set<AssistantResearchFacet>
@@ -1178,6 +1178,88 @@ struct AssistantResearchDossier: Sendable {
     }
 }
 
+/// Las búsquedas posteriores conservan los alias ya entregados al modelo. Una
+/// lectura acredita su página exacta, nunca el resto de los resultados del turno.
+struct AssistantResearchTurnSources: Sendable {
+    private(set) var sources: [String: AssistantResearchSource]
+
+    init(_ initial: [String: AssistantResearchSource]) { sources = initial }
+
+    mutating func incorporate(_ result: AssistantToolResult) -> [String] {
+        var affected: [String] = []
+        for reference in result.references {
+            let key = CanonicalURL.key(reference.url)
+            let payload = result.researchSources.first { $0.key == key && $0.origin == reference.origin }
+            let existing = sources.keys.sorted().first { sources[$0]?.key == key }
+            let id: String
+            if let existing {
+                id = existing
+            } else {
+                guard sources.count < AssistantResearchDossier.maximumSources else { continue }
+                let next = (sources.keys.compactMap { Int($0.dropFirst()) }.max() ?? 0) + 1
+                id = "\(reference.origin == .library ? "B" : "W")\(next)"
+                sources[id] = .init(title: reference.title, url: reference.url, bookmarkID: nil,
+                    summary: String((payload?.summary ?? reference.summary ?? "").prefix(1_800)),
+                    evidence: String((payload?.evidence ?? "").prefix(3_200)), origin: reference.origin,
+                    facets: [.overview], collection: reference.collection, tags: reference.tags)
+            }
+            if let payload, sources[id]?.pageWasRead == false,
+               payload.evidence.count > (sources[id]?.evidence.count ?? 0) {
+                sources[id]?.evidence = String(payload.evidence.prefix(3_200))
+            }
+            if let payload, sources[id]?.origin == payload.origin,
+               payload.summary.count > (sources[id]?.summary.count ?? 0) {
+                sources[id]?.summary = String(payload.summary.prefix(1_800))
+            }
+            if result.didReadWebSource, result.references.count == 1, reference.origin == .web {
+                sources[id]?.pageWasRead = true
+                sources[id]?.evidence = String(result.text.prefix(3_200))
+            }
+            if !affected.contains(id) { affected.append(id) }
+        }
+        return affected
+    }
+
+    func context(ids: [String], maximumCharacters: Int) -> String {
+        let budget = max(0, min(maximumCharacters, 24_000))
+        var text = ""
+        for id in ids {
+            guard let source = sources[id] else { continue }
+            let header = "[\(id)] \(String(source.title.prefix(180)))\n\(source.url ?? "")\n"
+                + "Procedencia: \(source.pageWasRead ? "página leída" : "metadatos o resultado; página no leída")\n"
+            let remaining = budget - text.count - header.count - 3
+            guard remaining >= 80 else { continue }
+            let evidenceLimit = min(1_600, source.evidence.count, remaining)
+            let summaryLimit = min(350, max(0, remaining - evidenceLimit))
+            let record = header + String(source.summary.prefix(summaryLimit)) + "\n"
+                + String(source.evidence.prefix(evidenceLimit)) + "\n\n"
+            text += record
+        }
+        return text
+    }
+}
+
+struct AssistantResearchAdviceOutput: Sendable {
+    let text: String
+    var reachedLengthLimit = false
+}
+
+struct AssistantResearchReviewMetrics: Sendable {
+    enum Stage: String, Sendable { case draft, repair }
+    enum IssueClass: String, Sendable {
+        case emptyOrOversized, unknownCitation, language, unbackedChoice, identity
+        case capability, unsupportedAbsence, provenance, truncated, structure
+    }
+    let stage: Stage
+    let characters: Int
+    let sourceCount: Int
+    let readSourceCount: Int
+    let unknownCitations: Int
+    let issueCount: Int
+    let issueClasses: [IssueClass]
+    let reachedLengthLimit: Bool
+}
+
 /// Revisión acotada del texto visible: valida idioma, identificadores reales y el
 /// papel citado. No inventa recomendaciones ni da por comprobada la compatibilidad.
 enum AssistantResearchAnswer {
@@ -1356,6 +1438,7 @@ enum AssistantResearchAnswer {
             if field.trimmingCharacters(in: .whitespaces).hasPrefix("```") || field.trimmingCharacters(in: .whitespaces).hasPrefix("~~~") { insideCode.toggle(); continue }
             if insideCode || field.trimmingCharacters(in: .whitespaces).isEmpty { continue }
             let allowed = Set(citationTokens(in: field))
+            if allowed.isEmpty, pureSourceLabel(field, sources: sources) { continue }
             if allowed.isEmpty, isUnbackedProposal(field),
                field.range(of: #"[.!?]\s+\p{L}"#, options: .regularExpression) == nil { continue }
             result += structuredAttributionIssues(in: field, allowedIDs: allowed, sources: sources)
@@ -1366,27 +1449,106 @@ enum AssistantResearchAnswer {
         return Array(result.filter { seen.insert($0).inserted }.prefix(8))
     }
 
+    private static func pureSourceLabel(_ field: String, sources: [String: AssistantResearchSource]) -> Bool {
+        let trimmed = field.trimmingCharacters(in: .whitespaces)
+        guard let prefix = trimmed.range(of: #"^#{1,6}\s+"#, options: .regularExpression) else { return false }
+        let label = String(trimmed[prefix.upperBound...]).trimmingCharacters(in: .whitespaces.union(CharacterSet(charactersIn: "*_`")))
+        let normalized = AssistantActionPolicy.normalized(label)
+        let matchingIDs = Set(sources.compactMap { id, source in
+            identityNames(for: source, includingMetadata: false).contains(where: { AssistantActionPolicy.normalized($0) == normalized }) ? id : nil
+        })
+        guard !matchingIDs.isEmpty else { return false }
+        let capability = capabilityField(in: label, defaultSubjectIDs: [], allowedIDs: matchingIDs, sources: sources)
+        return capability.obligations.isEmpty && capability.errors.isEmpty
+    }
+
     /// Una sola reparación con el mismo generador; nunca publica el borrador
     /// rechazado ni lo convierte en memoria de conversación validada.
     @concurrent
     static func reviewAdvice(_ draft: String, plan: AssistantResearchPlan, spanish: Bool,
                              sources: [String: AssistantResearchSource],
+                             draftReachedLengthLimit: Bool = false,
+                             contextWindow: Int = 16_384,
                              detectedLanguage: (@Sendable (String) -> String?)? = nil,
-                             repair: @MainActor (String) async throws -> String) async throws -> AssistantResearchComposition {
+                             recordReview: @MainActor (AssistantResearchReviewMetrics) -> Void = { _ in },
+                             repair: @MainActor (String) async throws -> AssistantResearchAdviceOutput) async throws -> AssistantResearchComposition {
         try Task.checkCancellation()
-        let originalIssues = adviceIssues(in: draft, spanish: spanish, sources: sources, detectedLanguage: detectedLanguage)
+        func reviewedIssues(_ text: String, truncated: Bool) -> [String] {
+            let issues = adviceIssues(in: text, spanish: spanish, sources: sources, detectedLanguage: detectedLanguage)
+            return truncated ? ["La respuesta alcanzó el límite de generación; redacta una versión completa y más breve."] + issues : issues
+        }
+        func metrics(_ text: String, stage: AssistantResearchReviewMetrics.Stage, issues: [String], truncated: Bool) -> AssistantResearchReviewMetrics {
+            let classes = issues.map { issue -> AssistantResearchReviewMetrics.IssueClass in
+                if issue.hasPrefix("La respuesta de investigación está vacía") { return .emptyOrOversized }
+                if issue.hasPrefix("Citas inexistentes") { return .unknownCitation }
+                if issue.hasPrefix("Hay frases explicativas") { return .language }
+                if issue.hasPrefix("Hay recomendaciones") { return .unbackedChoice }
+                if issue.hasPrefix("La tecnología") || issue.hasPrefix("La explicación atribuye") { return .identity }
+                if issue.hasPrefix("La afirmación sobre") { return .capability }
+                if issue.hasPrefix("La ausencia") || issue.hasPrefix("La negación") { return .unsupportedAbsence }
+                if issue.hasPrefix("No presentes como fuentes verificadas") { return .provenance }
+                if issue.hasPrefix("La respuesta alcanzó el límite") { return .truncated }
+                return .structure
+            }
+            return .init(stage: stage, characters: text.count, sourceCount: sources.count,
+                  readSourceCount: sources.values.count(where: \.pageWasRead),
+                  unknownCitations: Set(citationTokens(in: text)).subtracting(sources.keys).count,
+                  issueCount: issues.count, issueClasses: classes, reachedLengthLimit: truncated)
+        }
+        let originalIssues = reviewedIssues(draft, truncated: draftReachedLengthLimit)
+        await recordReview(metrics(draft, stage: .draft, issues: originalIssues, truncated: draftReachedLengthLimit))
         if originalIssues.isEmpty { return .init(text: draft, sources: sources, issues: [], rounds: 0, generatedCharacters: 0) }
-        let evidence = sources.keys.sorted().compactMap { id -> String? in
+        let cited = Set(citationTokens(in: draft))
+        let topic = AssistantResearchPlan.lexicalTopic(for: AssistantActionPolicy.publicWebContext(plan.contextRequest))
+        let topicScores = sources.mapValues { topic.score(in: $0.title + " " + $0.summary) ?? -1 }
+        let ordered = sources.keys.sorted {
+            if topicScores[$0] != topicScores[$1] { return (topicScores[$0] ?? -1) > (topicScores[$1] ?? -1) }
+            let left = (cited.contains($0) ? 2 : 0) + (sources[$0]?.pageWasRead == true ? 1 : 0)
+            let right = (cited.contains($1) ? 2 : 0) + (sources[$1]?.pageWasRead == true ? 1 : 0)
+            return left == right ? $0 < $1 : left > right
+        }
+        let evidence = ordered.compactMap { id -> String? in
             guard let source = sources[id] else { return nil }
-            return "[\(id)] \(source.title)\nProcedencia: \(source.pageWasRead ? "página leída" : "metadatos o resultado; página no leída")\n\(source.url ?? "")\n\(source.summary)\n\(source.evidence)"
+            return "[\(id)] \(source.title)\nProcedencia: \(source.pageWasRead ? "página leída" : "metadatos o resultado; página no leída")\n\(source.url ?? "")\n\(String(source.summary.prefix(600)))\n\(String(source.evidence.prefix(1_200)))"
         }.joined(separator: "\n\n")
-        let request = plan.contextRequest + "\n\n" + AssistantActionPolicy.researchResponseDirective(spanish: spanish)
+        let conciseRepair = spanish
+            ? "\nSalvo que la petición exija más extensión, entrega como máximo seis frases completas. En cada frase que mencione una herramienta repite su ID exacto y nombra explícitamente al sujeto; esto también se aplica a pasos y límites pendientes. Prioriza hasta dos candidatos que resuelvan directamente el objetivo solicitado, salvo que la petición exija más opciones. No sustituyas ese objetivo por optimizaciones de otro tipo de modelo. Omite recomendaciones técnicas sin evidencia, comandos inventados, conversiones de formatos no verificadas y listas de herramientas descartadas. No declares que una fuente no existe porque su ficha no quepa en este contexto. No añadas versiones ni requisitos numéricos que no figuren literalmente en la evidencia. Los pasos generales pueden proponer una medición y comparar resultados, sin atribuir ventajas de hardware ni compatibilidad que no figuren en el dossier."
+            : "\nReturn at most six complete sentences unless the request requires a longer answer. Every sentence mentioning a tool must repeat its exact ID and explicitly name its subject, including steps and pending checks. Prioritize up to two candidates that directly address the requested goal unless the request requires more options; do not substitute optimizations of a different kind of model. Omit unsupported technical recommendations, invented commands, unverified format conversions and lists of rejected tools. A source missing from this bounded context is not proof that it does not exist. Add no versions or numeric requirements absent from the evidence. General steps may propose measurements and compare results without attributing hardware advantages or compatibility absent from the dossier."
+        let header = plan.contextRequest + "\n\n" + AssistantActionPolicy.researchResponseDirective(spanish: spanish) + conciseRepair
             + "\nProblemas detectados:\n" + originalIssues.joined(separator: "\n")
-            + "\nFUENTES DEL TURNO ACTUAL:\n" + AssistantActionPolicy.untrustedPayload(evidence, source: "dossier de reparación", maximumCharacters: 24_000)
-            + "\nBORRADOR A CORREGIR:\n" + AssistantActionPolicy.untrustedPayload(draft, source: "respuesta generada sin validar", maximumCharacters: 24_000)
-        let corrected = try await repair(request)
+        // Un byte por token es una cota conservadora para los tokenizadores
+        // locales. Reserva la generación razonada y el sistema/plantilla antes de
+        // repartir un único presupuesto entre evidencia y borrador.
+        let requestBudget = min(24_000, max(0, contextWindow - 1_024
+            - AssistantSessionPolicy.reasonedGenerationTokens(answerTokens: AssistantContextBudget.outputTokens(contextWindow: contextWindow))))
+        let evidenceLabel = "\nFUENTES DEL TURNO ACTUAL:\n"
+        let draftLabel = "\nBORRADOR A CORREGIR:\n"
+        let evidenceSource = "dossier de reparación"
+        let draftSource = "respuesta generada sin validar"
+        let wrappers = AssistantActionPolicy.untrustedPayload("", source: evidenceSource).utf8.count
+            + AssistantActionPolicy.untrustedPayload("", source: draftSource).utf8.count
+        let available = requestBudget - header.utf8.count - evidenceLabel.utf8.count - draftLabel.utf8.count - wrappers
+        guard available >= 512 else {
+            let message = spanish ? "La petición supera el contexto disponible para contrastar sus fuentes. Acota la parte que quieres resolver primero." : "The request exceeds the context available to check its sources. Narrow down the part to solve first."
+            return .init(text: message, sources: sources, issues: originalIssues, rounds: 0, generatedCharacters: 0)
+        }
+        func payload(_ raw: String, source: String, contentBytes: Int) -> String {
+            var prefix = "", used = 0
+            for character in raw {
+                let size = String(character).utf8.count
+                guard used + size <= contentBytes else { break }
+                prefix.append(character); used += size
+            }
+            return AssistantActionPolicy.untrustedPayload(prefix, source: source)
+        }
+        let draftBytes = min(6_000, available / 3)
+        let request = header + evidenceLabel + payload(evidence, source: evidenceSource, contentBytes: available - draftBytes)
+            + draftLabel + payload(draft, source: draftSource, contentBytes: draftBytes)
+        let output = try await repair(request)
+        let corrected = output.text
         try Task.checkCancellation()
-        let remaining = adviceIssues(in: corrected, spanish: spanish, sources: sources, detectedLanguage: detectedLanguage)
+        let remaining = reviewedIssues(corrected, truncated: output.reachedLengthLimit)
+        await recordReview(metrics(corrected, stage: .repair, issues: remaining, truncated: output.reachedLengthLimit))
         let safe = spanish
             ? "No he podido respaldar la propuesta con las fuentes de este turno. Los enlaces recuperados son candidatos: sus metadatos no validan una combinación de herramientas. Antes de elegir, hay que contrastar sus requisitos de hardware, ejecución local y compatibilidad en las páginas originales."
             : "I could not support the proposal with this turn's sources. Retrieved links are candidates: their metadata does not validate a combination of tools. Before choosing, check hardware requirements, local execution and compatibility on the original pages."
@@ -1434,7 +1596,8 @@ enum AssistantResearchAnswer {
         func contains(_ name: String) -> Bool {
             normalized.range(of: #"(?<![\p{L}\p{N}_])"# + NSRegularExpression.escapedPattern(for: AssistantActionPolicy.normalized(name)) + #"(?![\p{L}\p{N}_])"#, options: .regularExpression) != nil
         }
-        var names = Set(proposedNames(in: "Propuesta: " + prose).filter { name in
+        let syntheticProse = prose.replacingOccurrences(of: #"^[\s#>*•+-]+"#, with: "", options: .regularExpression)
+        var names = Set(proposedNames(in: "Propuesta: " + syntheticProse).filter { name in
             prose.contains("«" + name + "»") || prose.contains("\"" + name + "\"")
                 || (name != name.uppercased() && name.dropFirst().contains(where: \.isUppercase))
                 || name.contains(where: \.isNumber)
@@ -1444,15 +1607,46 @@ enum AssistantResearchAnswer {
         names.formUnion(proposedNames(in: prose).filter { name in
             name.first?.isUppercase == true || prose.contains("«" + name + "»") || prose.contains("\"" + name + "\"")
         })
-        names.formUnion(explicitRecommendationObjects(in: prose))
+        let explicitObjects = explicitRecommendationObjects(in: prose)
+        names.formUnion(explicitObjects)
         for source in sources.values {
             for identity in identityNames(for: source) where identity.count >= 4 && contains(identity) {
                 if !allowed.contains(where: { mentions(identity, source: $0) }) { names.insert(identity) }
             }
         }
         return names.sorted().compactMap { name in
+            if !explicitObjects.contains(name), !prose.contains("«" + name + "»"), !prose.contains("\"" + name + "\""),
+               !sources.values.contains(where: { AssistantActionPolicy.normalized($0.title) == AssistantActionPolicy.normalized(name) }),
+               descriptiveMeasurement(name, in: prose) { return nil }
             guard !allowed.contains(where: { mentions(name, source: $0) }) else { return nil }
             return "La explicación atribuye «" + name + "» a una fuente distinta; conserva la identidad y la evidencia del ID elegido."
+        }
+    }
+
+    private static func descriptiveMeasurement(_ name: String, in prose: String) -> Bool {
+        let dimensional = name.caseInsensitiveCompare("3D") == .orderedSame
+        let quantity = name.range(of: #"(?i)^(?:[0-9]+(?:[.,][0-9]+)?(?:[KMGT]i?B|ms|s|Hz|kHz|MHz|GHz|mm|cm|m|px|fps|K)|[0-9]+(?:[x×][0-9]+){1,2})$"#, options: .regularExpression) != nil
+        guard dimensional || quantity else { return false }
+        let ranges = identityRanges(name, in: prose)
+        guard !ranges.isEmpty else { return false }
+        return ranges.allSatisfy { range in
+            guard let occurrence = Range(range, in: prose) else { return false }
+            let before = String(prose[..<occurrence.lowerBound].suffix(60))
+            let after = String(prose[occurrence.upperBound...].prefix(60))
+            if dimensional {
+                // El término dimensional aislado no identifica un producto. Un
+                // objeto de recomendación, título exacto o elección tras «:» sí.
+                return !before.trimmingCharacters(in: .whitespaces).hasSuffix(":")
+                    && before.range(of: #"(?i)\b(?:producto|tecnología|herramienta|motor|framework|app|aplicación|product|technology|tool|engine|application)\s+$"#, options: .regularExpression) == nil
+            }
+            // Una cantidad conserva su papel de medida sólo en su cláusula;
+            // cifras dentro de nombres o elecciones explícitas siguen atribuyéndose.
+            let start = before.lastIndex(where: { ".;!?\n".contains($0) }).map { before.index(after: $0) } ?? before.startIndex
+            let end = after.firstIndex(where: { ".;!?\n".contains($0) }) ?? after.endIndex
+            let localBefore = String(before[start...]), localAfter = String(after[..<end])
+            let measures = #"(?:RAM|VRAM|memoria|consumo|resolución|entrada|imagen|tamaño|tiempo|latencia|frecuencia|velocidad|dimensiones|memory|resolution|input|image|size|latency|frequency|dimensions)"#
+            return localBefore.range(of: #"(?i)\b"# + measures + #"\s+(?:(?:de|a|en|of|at)\s+)?$"#, options: .regularExpression) != nil
+                || localAfter.range(of: #"(?i)^\s+(?:(?:de|of)\s+)?"# + measures + #"\b"#, options: .regularExpression) != nil
         }
     }
 
@@ -2519,6 +2713,15 @@ enum AssistantResearchCoordinator {
     ) async throws -> AssistantResearchDossier {
         var dossier = AssistantResearchDossier()
         var webCandidates: [AssistantResearchSource] = []
+        let publicTopic = AssistantResearchPlan.lexicalTopic(for: AssistantActionPolicy.publicWebContext(plan.contextRequest))
+        func orderedPublicResults(_ sources: [AssistantResearchSource]) -> [AssistantResearchSource] {
+            guard !plan.isSoftwarePlanning, !publicTopic.isEmpty else { return sources }
+            return sources.enumerated().sorted { left, right in
+                let leftScore = publicTopic.score(in: left.element.title + " " + left.element.summary) ?? -1
+                let rightScore = publicTopic.score(in: right.element.title + " " + right.element.summary) ?? -1
+                return leftScore == rightScore ? left.offset < right.offset : leftScore > rightScore
+            }.map(\.element)
+        }
         for query in plan.libraryQueries {
             try Task.checkCancellation()
             progress("Biblioteca · \(query.facet.title)")
@@ -2550,7 +2753,7 @@ enum AssistantResearchCoordinator {
                     return StacklumeAutomationPolicy.allowsExternalCaptureURL(url)
                         && (!plan.isSoftwarePlanning || query.facets.contains { $0.supports(source) })
                 }
-                webCandidates.append(contentsOf: relevant.prefix(3))
+                webCandidates.append(contentsOf: orderedPublicResults(relevant).prefix(3))
                 dossier.append(.init(sources: relevant, candidateCount: batch.candidateCount, notice: batch.notice), query: query, web: true)
             } catch is CancellationError { throw CancellationError() }
             catch { dossier.recordNotice("Web · \(query.facet.title): \(error.localizedDescription)") }
@@ -2558,7 +2761,7 @@ enum AssistantResearchCoordinator {
         var hosts = Set<String>()
         // Lee únicamente URLs exactas devueltas por la búsqueda web. Deduplicar con
         // una URL guardada no autoriza enviar sus parámetros privados a Internet.
-        let pages = webCandidates.filter { source in
+        let pages = orderedPublicResults(webCandidates).filter { source in
             guard let raw = source.url, let host = URL(string: raw)?.host else { return false }
             return hosts.insert(host.lowercased()).inserted
         }.prefix(3)

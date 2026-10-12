@@ -983,7 +983,7 @@ final class LiquidConversation {
         let retrievalCharacterBudget = AssistantResearchDossier.contextCharacterBudget(contextWindow: contextWindow)
         let retrievalContext = dossier.context(maximumCharacters: retrievalCharacterBudget)
         let citationSources = dossier.citationSources(in: retrievalContext)
-        var reviewSources = citationSources
+        var turnSources = AssistantResearchTurnSources(citationSources)
         let requiredFacets = researchPlan.requestedFacets
         let requestedComponentTitles = requiredFacets.map { researchPlan.componentTitle(for: $0) }
         let plannedFacets = Set(researchPlan.libraryQueries.flatMap { $0.facets })
@@ -1061,6 +1061,7 @@ final class LiquidConversation {
         let focusedResearch = researchPlan.isSoftwarePlanning
         let reviewedAdvice = researchPlan.requiresSourceResearch && !focusedResearch
         var adviceDraft = ""
+        var adviceDraftReachedLengthLimit = false
         let needsResearchTools = selectedNames.contains("analizar_contenido") || selectedNames.contains("enlaces_relacionados")
         let preparationRounds = focusedResearch && needsResearchTools ? 3 : 0
         let preparationBudget = preparationRounds > 0 ? min(768, outputTokens / 4) : 0
@@ -1098,13 +1099,16 @@ final class LiquidConversation {
                     accReasoning += accReasoning.isEmpty ? roundReasoning : "\n" + roundReasoning
                 }
 
-                if reviewedAdvice { adviceDraft = roundAnswer }
+                if reviewedAdvice {
+                    adviceDraft = roundAnswer
+                    adviceDraftReachedLengthLimit = output.reachedLengthLimit
+                }
 
                 // Sin llamadas a herramienta → `roundText` es la respuesta final.
                 if pendingCalls.isEmpty {
                     // maxTokens limita pensamiento y respuesta juntos. Si la ronda
                     // acotada comenzó a responder, completa igualmente el stack.
-                    needsCompleteResponse = roundTokenBudget < outputTokens && output.reachedLengthLimit
+                    needsCompleteResponse = output.reachedLengthLimit
                     break
                 }
                 observedToolCalls += pendingCalls.count
@@ -1258,6 +1262,7 @@ final class LiquidConversation {
                     // Convierte únicamente resultados REALES de herramientas en referencias
                     // interactivas. La prosa generada nunca autoriza una tarjeta por sí sola.
                     let exactReferences = verifiedResult.references
+                    let affectedSourceIDs = turnSources.incorporate(verifiedResult)
                     if !exactReferences.isEmpty, messages.indices.contains(i) {
                         messages[i].references = AssistantResponsePresentation.sanitizedReferences(
                             messages[i].references + exactReferences
@@ -1272,15 +1277,6 @@ final class LiquidConversation {
                     }
                     if verifiedResult.didReadWebSource {
                         didReadWebSource = true
-                        // Un recibo acredita sólo las páginas realmente leídas,
-                        // conservando los alias originales del dossier del turno.
-                        let keys = Set(exactReferences.filter { $0.origin == .web }.map { CanonicalURL.key($0.url) })
-                        for id in reviewSources.keys {
-                            if let source = reviewSources[id], keys.contains(source.key) {
-                                reviewSources[id]?.pageWasRead = true
-                                reviewSources[id]?.evidence = String(verifiedResult.text.prefix(3_200))
-                            }
-                        }
                     }
                     // Tope defensivo: evita inflar el prefill de la siguiente ronda si un
                     // resultado fuera enorme (las herramientas ya acotan, esto es red de
@@ -1288,8 +1284,10 @@ final class LiquidConversation {
                     // Incluso un resultado de escritura puede contener un título o nota
                     // controlados por una página. Todos los outputs son evidencia, nunca
                     // instrucciones para el modelo ni una autorización implícita.
+                    let updatedSources = reviewedAdvice
+                        ? turnSources.context(ids: affectedSourceIDs, maximumCharacters: maxToolResultCharacters - 400) : ""
                     let transcriptResult = AssistantActionPolicy.untrustedPayload(
-                        result,
+                        updatedSources.isEmpty ? result : "Fuentes reales del turno; conserva sus alias:\n" + updatedSources + "Resultado adicional:\n" + result,
                         source: canonicalName
                     )
                     transcript.append(.tool(String(transcriptResult.prefix(maxToolResultCharacters))))
@@ -1372,6 +1370,7 @@ final class LiquidConversation {
                 let clean = answer.trimmingCharacters(in: .whitespacesAndNewlines)
                 if reviewedAdvice {
                     adviceDraft = clean
+                    adviceDraftReachedLengthLimit = output.reachedLengthLimit
                 } else if messages.indices.contains(i) {
                     // Si aún no hay nada, un cierre útil (NUNCA el «no he llegado a respuesta clara»).
                     messages[i].text = !clean.isEmpty
@@ -1385,8 +1384,11 @@ final class LiquidConversation {
                     return LinkTranslator.detectLanguage(prose)?.rawValue == "es" ? "es" : nil
                 }
                 let reviewed = try await AssistantResearchAnswer.reviewAdvice(
-                    adviceDraft, plan: researchPlan, spanish: isSpanish, sources: reviewSources,
-                    detectedLanguage: detectLanguage
+                    adviceDraft, plan: researchPlan, spanish: isSpanish, sources: turnSources.sources,
+                    draftReachedLengthLimit: adviceDraftReachedLengthLimit,
+                    contextWindow: contextWindow,
+                    detectedLanguage: detectLanguage,
+                    recordReview: { AgentDiagnostics.shared.recordResearchReview($0) }
                 ) { request in
                     try Task.checkCancellation()
                     guard self.isCurrent(ticket), self.messages.indices.contains(i) else { throw CancellationError() }
@@ -1396,11 +1398,13 @@ final class LiquidConversation {
                         specs: [], maximumTokens: outputTokens, thinking: true, accumulatedReasoning: accReasoning,
                         publishesPartialText: false, messageIndex: i, ticket: ticket
                     )
-                    return Self.splitRound(output.text, thinking: true).answer
+                    return .init(text: Self.splitRound(output.text, thinking: true).answer,
+                                 reachedLengthLimit: output.reachedLengthLimit)
                 }
                 guard isCurrent(ticket), !Task.isCancelled, messages.indices.contains(i) else { throw CancellationError() }
                 messages[i].text = reviewed.text
                 researchAnswerPassedReview = reviewed.issues.isEmpty
+                if !researchAnswerPassedReview { outcome = .failed }
                 generatedCharacterCount += reviewed.generatedCharacters
                 round += reviewed.rounds
             }

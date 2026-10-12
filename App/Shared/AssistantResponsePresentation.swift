@@ -25,11 +25,14 @@ struct AssistantToolResult: Sendable {
     let text: String
     let references: [AssistantLinkReference]
     let didReadWebSource: Bool
+    let researchSources: [AssistantResearchSource]
 
-    init(_ text: String, references: [AssistantLinkReference] = [], didReadWebSource: Bool = false) {
+    init(_ text: String, references: [AssistantLinkReference] = [], didReadWebSource: Bool = false,
+         researchSources: [AssistantResearchSource] = []) {
         self.text = text
         self.references = AssistantResponsePresentation.sanitizedReferences(references)
         self.didReadWebSource = didReadWebSource && !self.references.isEmpty
+        self.researchSources = Array(researchSources.prefix(AssistantResearchDossier.maximumSources))
     }
 }
 

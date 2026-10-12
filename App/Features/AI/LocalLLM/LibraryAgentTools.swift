@@ -436,6 +436,18 @@ struct LibraryAgentTools: Sendable {
                                collection: bookmark.category?.name, tags: bookmark.tags.map(\.name), origin: .library)
     }
 
+    @MainActor
+    private static func researchSource(_ link: Bookmark, facet: AssistantResearchFacet = .overview,
+                                       evidence: String? = nil) -> AssistantResearchSource {
+        let content = [link.summary, link.details, link.notes].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
+        return .init(title: String((link.title.isEmpty ? link.url : link.title).prefix(240)),
+                     url: link.url.isEmpty ? nil : link.url, bookmarkID: link.id,
+                     summary: String(content.prefix(1_800)),
+                     evidence: String((evidence ?? link.offlineText ?? "").prefix(2_400)),
+                     origin: .library, facets: [facet], collection: link.category.map { String($0.name.prefix(100)) },
+                     tags: link.tags.prefix(8).map { String($0.name.prefix(80)) })
+    }
+
     /// Resume el impacto REAL de una llamada antes de que el usuario la confirme. Esta
     /// previsualización consulta el estado actual, pero la autorización nunca se infiere del
     /// prompt: `LiquidConversation` conserva y ejecuta exactamente la llamada aprobada.
@@ -669,7 +681,8 @@ struct LibraryAgentTools: Sendable {
             let links = activeBookmarks()
             let hits = links.filter { Self.matchesQuery($0, q) }.prefix(25)
             if hits.isEmpty { return AssistantToolResult(Self.emptyHint(q, links: links)) }
-            return AssistantToolResult(hits.map(Self.describe).joined(separator: "\n"), references: hits.map(Self.reference))
+            return AssistantToolResult(hits.map(Self.describe).joined(separator: "\n"), references: hits.map(Self.reference),
+                                       researchSources: hits.map { Self.researchSource($0) })
         }
     }
 
@@ -710,7 +723,7 @@ struct LibraryAgentTools: Sendable {
             return AssistantToolResult(text, references: batch.sources.compactMap { source in
                 guard let url = source.url else { return nil }
                 return AssistantLinkReference(title: source.title, url: url, summary: source.summary, collection: source.collection, tags: source.tags, origin: source.origin)
-            })
+            }, researchSources: batch.sources)
         } catch is CancellationError { return AssistantToolResult("Búsqueda cancelada.") }
         catch { return AssistantToolResult("No se pudo consultar la biblioteca: \(error.localizedDescription)") }
     }
@@ -749,12 +762,7 @@ struct LibraryAgentTools: Sendable {
             let match = matches.first { $0.bookmarkID == link.id }
             let snippet = match.map { "\($0.modality)\($0.location.map { " · " + $0 } ?? ""): \($0.preview)" }
                 ?? (notice == nil ? "" : String((link.offlineText ?? "").prefix(2_400)))
-            let content = [link.summary, link.details, link.notes].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
-            return AssistantResearchSource(title: String((link.title.isEmpty ? link.url : link.title).prefix(240)),
-                url: link.url.isEmpty ? nil : link.url, bookmarkID: link.id,
-                summary: String(content.prefix(1_800)), evidence: String(snippet.prefix(2_400)),
-                origin: .library, facets: [query.facet], collection: link.category.map { String($0.name.prefix(100)) },
-                tags: link.tags.prefix(8).map { String($0.name.prefix(80)) })
+            return Self.researchSource(link, facet: query.facet, evidence: snippet)
         }
         return .init(sources: sources, candidateCount: count, notice: notice)
     }
