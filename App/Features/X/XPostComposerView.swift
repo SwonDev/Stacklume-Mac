@@ -415,6 +415,8 @@ struct XPostComposerView: View {
                 // Mismo modelo que el asistente y el enriquecido actuales. El campo
                 // aiProvider del core compartido es legado y no configura la app Mac.
                 let runner = LocalAIRunner.shared
+                let modelReservation = runner.reserveSelectedModel()
+                defer { runner.releaseSelectedModel(modelReservation) }
                 guard !runner.isDeactivated, runner.isAvailable else { throw UnifiedAIError.liquidNotLoaded }
                 // Pulsar Generar es un reintento explícito tras una carga fallida.
                 if runner.modelContainer == nil {
@@ -442,7 +444,7 @@ struct XPostComposerView: View {
                     while true {
                         guard generationID == identifier, loadedLinkID == requestedLinkID, link.id == requestedLinkID else { return }
                         lastOutput = ""
-                        guard let output = await LocalAIRunner.shared.complete(system: request.system, prompt: request.user, maxTokens: 4096, enableThinking: true) else { throw UnifiedAIError.liquidFailed }
+                        guard let output = await LocalAIRunner.shared.complete(system: request.system, prompt: request.user, maxTokens: 2048, enableThinking: true) else { throw UnifiedAIError.liquidFailed }
                         lastOutput = output
                         try Task.checkCancellation()
                         guard generationID == identifier, loadedLinkID == requestedLinkID, link.id == requestedLinkID else { return }
@@ -478,13 +480,14 @@ struct XPostComposerView: View {
                             try workflow.markLexicallyValid(revision: copies.revision)
                             phase = .audit
                             var auditAttempts = 0
+                            var previousAuditResponse: String?
                             while true {
                                 try workflow.beginAudit()
                                 auditAttempts += 1
                                 status = auditAttempts == 1 ? "Revisando hechos, traducción y coherencia…" : "Corrigiendo el formato de la revisión…"
-                                let auditRequest = XPostSemanticAuditPolicy.prompt(batch: copies, language: language, repairingFormat: auditAttempts > 1, spellingWarnings: spelling)
+                                let auditRequest = XPostSemanticAuditPolicy.prompt(batch: copies, language: language, repairingFormat: auditAttempts > 1, spellingWarnings: spelling, audience: audience, angle: angle, previousResponse: previousAuditResponse)
                                 lastOutput = ""
-                                guard let auditOutput = await LocalAIRunner.shared.complete(system: auditRequest.system, prompt: auditRequest.user, maxTokens: 4096, enableThinking: true) else { throw UnifiedAIError.liquidFailed }
+                                guard let auditOutput = await LocalAIRunner.shared.complete(system: auditRequest.system, prompt: auditRequest.user, maxTokens: 8192, enableThinking: true) else { throw UnifiedAIError.liquidFailed }
                                 lastOutput = auditOutput
                                 try Task.checkCancellation()
                                 guard generationID == identifier, loadedLinkID == requestedLinkID, link.id == requestedLinkID else { return }
@@ -495,6 +498,7 @@ struct XPostComposerView: View {
                                     diagnostics.append(XPostBatchDiagnostic(call: workflow.calls, phase: phase, raw: auditOutput, candidate: copies, issues: pending))
                                     break
                                 } catch let error as XPostSemanticAuditPolicy.AuditError where auditAttempts < 3 && (error == .malformed || error == .invalidProvenance) {
+                                    previousAuditResponse = auditOutput
                                     diagnostics.append(XPostBatchDiagnostic(call: workflow.calls, phase: phase, raw: auditOutput, candidate: copies,
                                                                            invalidProvenance: error == .invalidProvenance))
                                     Self.recordCopyDiagnostics(diagnostics)

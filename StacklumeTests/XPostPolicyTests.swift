@@ -20,6 +20,18 @@ struct XPostPolicyTests {
         + String(repeating: "Ejemplo de código: const APIs = cliente.enviar(\"Ada\"); // WebView2 muestra una interfaz Go-native. ", count: 4)
     }
 
+    @Test("Los hashtags no confunden los nombres de lenguajes con prefijos de publicación")
+    func distinguishesHashtagsFromLanguages() {
+        for text in ["C# permite programar en .NET.", "F# trabaja con funciones.", "Mezcla C# y F#.", "C# y F# son lenguajes.", "Usa (C#) o (F#)."] {
+            #expect(!XPostCopyPolicy.ruleIndicators(text).hashtag)
+        }
+        for text in ["#Marca mejora el flujo.", "Usa #L12 como referencia.", "Escribe #include para importar.", "archivo.swift#L12", "# Función concreta respaldada.", "C#Marcador", "AC#", "F##", "C#\u{0301}Marcador", "A\u{0301}C#"] {
+            #expect(XPostCopyPolicy.ruleIndicators(text).hashtag, "Marcador detectado en: \(text)")
+        }
+        #expect(XPostCopyPolicy.ruleIndicators("C# @autor").mention)
+        #expect(XPostCopyPolicy.ruleIndicators("C# https://example.org").proposedURL)
+    }
+
     @Test("La cuenta X procede del enlace declarado, nunca del nombre de GitHub")
     func authorAccountUsesOfficialLink() throws {
         let resource = try #require(URL(string: "https://mygo.egoist.dev"))
@@ -1430,6 +1442,41 @@ struct StacklumeLaunchPolicyTests {
 
 @Suite("Protocolo provisional de auditoría X; veredictos declarados, sin LLM")
 struct XPostBatchAuditTests {
+    @Test("Solo una petición de tono único permite omitir su identificador; ningún texto se infiere")
+    func singleToneBoundByGenerationRequest() throws {
+        let copy: [String: Any] = ["gancho": "Aster crea aplicaciones de escritorio con Go.",
+                                   "utilidad": "La interfaz se dibuja en la GPU."]
+        let wire = try json(["variantes": [copy]])
+        let result = try XPostGroupedCopyPolicy.extract(wire, tones: [.impactful], context: context())
+        #expect(result.copies.keys.sorted(by: { $0.rawValue < $1.rawValue }) == [.impactful])
+        #expect(result.copies[.impactful]?.gancho == copy["gancho"] as? String)
+        var wrongTone = copy
+        wrongTone["tono"] = XPostTone.calm.rawValue
+        #expect(throws: XPostCopyPolicy.CopyError.malformed) {
+            try XPostGroupedCopyPolicy.extract(json(["variantes": [wrongTone]]), tones: [.impactful], context: context())
+        }
+        #expect(throws: XPostCopyPolicy.CopyError.malformed) {
+            try XPostGroupedCopyPolicy.extract(json(["variantes": [copy, copy]]), tones: [.impactful, .calm], context: context())
+        }
+        #expect(throws: XPostCopyPolicy.CopyError.malformed) {
+            try XPostGroupedCopyPolicy.extract(json(["variantes": [["utilidad": "La interfaz se dibuja en la GPU."]]]), tones: [.impactful], context: context())
+        }
+    }
+
+    @Test("Un pensamiento completo largo no invalida un veredicto breve; el pensamiento truncado no aprueba")
+    func boundedReasoningBeforeAudit() throws {
+        let current = try batch()
+        let verdict = try json(["variantes": auditRows()])
+        let thought = "<think>" + String(repeating: "razonamiento ", count: 2300)
+        #expect(try XPostSemanticAuditPolicy.extract(thought + "</think>" + verdict, batch: current).issues.isEmpty)
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.malformed) {
+            try XPostSemanticAuditPolicy.extract(thought + verdict, batch: current)
+        }
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.malformed) {
+            try XPostSemanticAuditPolicy.extract(String(repeating: " ", count: 96_001) + verdict, batch: current)
+        }
+    }
+
     private let source = "Aster creates desktop applications from Go code. The TypeScript client is generated from your Go code. Its native interface is drawn on the GPU and supports text editing, screen readers and deep links."
 
     private func context() throws -> XPostCopyPolicy.GenerationContext {
@@ -1634,7 +1681,7 @@ struct XPostBatchAuditTests {
         #expect(workflow.repairs == 1)
     }
 
-    @Test("El presupuesto reserva reauditoría y mantiene siete llamadas y dos reparaciones")
+    @Test("El presupuesto reserva reauditoría y mantiene siete llamadas y tres reparaciones")
     func boundedAuditBudget() throws {
         let value = try batch()
         var workflow = XPostAuditedBatchWorkflow()
@@ -1654,8 +1701,14 @@ struct XPostBatchAuditTests {
         repairs.stage(value)
         try repairs.beginRepair()
         try repairs.beginRepair()
-        #expect(repairs.repairs == 2)
+        try repairs.beginRepair()
+        #expect(repairs.repairs == 3)
         #expect(throws: XPostSemanticAuditPolicy.AuditError.budget) { try repairs.beginRepair() }
+        try repairs.markLexicallyValid(revision: value.revision)
+        try repairs.beginAudit()
+        try repairs.receive(XPostSemanticAuditPolicy.extract(json(["variantes": auditRows()]), batch: value))
+        #expect(try repairs.completedBatch().revision == value.revision)
+        #expect(repairs.calls == 5)
     }
 
     @Test("Dos reparaciones con auditoría independiente requieren seis llamadas y conservan el borrador previo")
@@ -1793,6 +1846,27 @@ struct XPostBatchAuditTests {
         }
     }
 
+    @Test("La reauditoría explica apoyos inválidos sin repetir contenido del modelo")
+    func repairAuditExplainsReferenceShapePrivately() throws {
+        let context = try context()
+        let current = XPostCopyBatch(copies: [.calm: .init(gancho: "Aster admite aplicaciones de escritorio.", utilidad: "Ofrece edición de texto.", apoyo: context.support)], context: context)
+        let response = "{\"gancho_estado\":\"aprobado\",\"gancho_apoyos\":[999,999,998],\"utilidad_estado\":\"aprobado\",\"utilidad_apoyos\":[],\"contenido_privado\":\"NO_REPETIR\"}"
+        let request = XPostSemanticAuditPolicy.prompt(batch: current, language: "es", repairingFormat: true, previousResponse: response)
+        #expect(request.user.contains("Los únicos índices permitidos son:"))
+        #expect(request.user.contains("índicesVálidos\":false"))
+        #expect(request.user.contains("aprobadoSinApoyo\":true"))
+        #expect(!request.user.contains("NO_REPETIR"))
+        #expect(!request.user.contains("contenido_privado"))
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.malformed) { try XPostSemanticAuditPolicy.extract(response, batch: current) }
+        let unsupported = "{\"gancho_estado\":\"aprobado\",\"gancho_apoyos\":[999],\"utilidad_estado\":\"aprobado\",\"utilidad_apoyos\":[0]}"
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.invalidProvenance) { try XPostSemanticAuditPolicy.extract(unsupported, batch: current) }
+        let longReasoning = "<think>" + String(repeating: "RAZONAMIENTO_PRIVADO ", count: 1500) + "</think>" + unsupported
+        let retry = XPostSemanticAuditPolicy.prompt(batch: current, language: "es", repairingFormat: true, previousResponse: longReasoning)
+        #expect(retry.user.contains("índicesVálidos\":false"))
+        #expect(!retry.user.contains("RAZONAMIENTO_PRIVADO"))
+        #expect(XPostSemanticAuditPolicy.structureDiagnostic(String(repeating: "x", count: 96001), batch: current) == nil)
+    }
+
     @Test("El catálogo conserva los cierres cortos y el ejemplo usa los tonos solicitados")
     func quotationCatalogKeepsShortEnding() throws {
         let complete = String(String(repeating: "El recurso procesa texto de la fuente ", count: 12).prefix(400)) + "es falso."
@@ -1805,8 +1879,8 @@ struct XPostBatchAuditTests {
         let quotes = entries.compactMap { $0["cita"] as? String }
         #expect(quotes.joined().hasSuffix("es falso."))
         #expect(quotes.allSatisfy { (12...250).contains($0.count) })
-        #expect(request.system.contains("\"tono\":\"technical\""))
-        #expect(!request.system.contains("\"tono\":\"calm\""))
+        #expect(request.user.contains("Tono solicitado: technical"))
+        #expect(!request.user.contains("Tono solicitado: calm"))
     }
 
     @Test("Explora es una acción válida y el vocabulario del público no altera el apoyo factual")
@@ -1828,7 +1902,7 @@ struct XPostBatchAuditTests {
     @Test("El tono impactante prioriza detalles concretos sin imponer imperativos")
     func englishImpactfulPromptUsesEnglishActions() throws {
         let request = XPostGroupedCopyPolicy.prompt(context: try context(), tones: [.impactful], title: "Aster", language: "en", angle: "Descubrimiento", audience: "", budget: 212)
-        #expect(request.system.contains("detalle más llamativo y concreto"))
+        #expect(request.system.contains("acción, control o resultado concreto"))
         #expect(!request.system.contains("Usa, Prueba"))
     }
 
@@ -1854,7 +1928,31 @@ struct XPostBatchAuditTests {
         let batch = XPostCopyBatch(copies: [.impactful: copy], context: context)
         let issues = XPostGroupedCopyPolicy.lexicalIssues(batch, source: source, language: "es", budget: 212)
         #expect(Set(issues.map(\.field)) == Set(XPostCopyField.allCases))
-        #expect(issues.allSatisfy { $0.reason == .redaccion })
+        #expect(issues.allSatisfy { $0.reason == .metadatos })
+    }
+
+    @Test("La reparación distingue signos de la fuente y detecta simultáneamente una apertura repetida")
+    func repairsSourceMarkersAndRepeatedOpeningTogether() throws {
+        let context = try context()
+        let copy = XPostGeneratedCopy(gancho: "Aster admite aplicaciones de escritorio.", utilidad: "Ofrece completado con @ y referencias #L12.", apoyo: context.support)
+        let batch = XPostCopyBatch(copies: [.calm: copy], context: context)
+        let previous = ["Aster admite aplicaciones de escritorio. Ofrece edición de texto."]
+        let issues = XPostGroupedCopyPolicy.lexicalIssues(batch, source: source, language: "es", budget: 212, previousTexts: previous)
+        #expect(issues.contains(.init(tone: .calm, field: .utilidad, reason: .metadatos)))
+        #expect(issues.contains(.init(tone: .calm, field: .gancho, reason: .repeticion)))
+        let request = XPostGroupedCopyPolicy.prompt(context: context, tones: [.calm], title: "Aster", language: "es", angle: "Descubrimiento", audience: "", budget: 212, previousTexts: previous, repairing: batch, issues: issues)
+        #expect(request.user.contains("descríbelos con palabras"))
+        #expect(request.user.contains("una apertura distinta"))
+        let raw = "{\"variantes\":[{\"tono\":\"calm\",\"gancho\":\"Aster funciona en el escritorio.\",\"utilidad\":\"Incluye referencias de líneas y completado de arrobas.\"}]}"
+        let repaired = try XPostGroupedCopyPolicy.extract(raw, tones: [.calm], context: context, repairing: batch, issues: issues)
+        #expect(repaired.copies[.calm]?.gancho == "Aster funciona en el escritorio.")
+        #expect(repaired.copies[.calm]?.utilidad == "Incluye referencias de líneas y completado de arrobas.")
+        #expect(XPostGroupedCopyPolicy.lexicalIssues(repaired, source: source, language: "es", budget: 212, previousTexts: previous).isEmpty)
+        let diagnostic = XPostBatchDiagnostic(call: 1, phase: .generation, raw: "", candidate: batch, issues: issues)
+        let encoded = String(decoding: try JSONEncoder().encode(diagnostic), as: UTF8.self)
+        #expect(encoded.contains("mention"))
+        #expect(!encoded.contains("#L12"))
+        #expect(!encoded.contains(copy.gancho))
     }
 
     @Test("La reparación de curiosidad exige ambos signos en español")
@@ -1892,6 +1990,10 @@ struct XPostBatchAuditTests {
         let batch = XPostCopyBatch(copies: [.impactful: copy], context: context)
         let row: [String: Any] = ["tono": "impactful", "gancho_estado": "aprobado", "gancho_apoyos": [0], "utilidad_estado": "aprobado", "utilidad_apoyos": [0]]
         #expect(try XPostSemanticAuditPolicy.extract(json(row), batch: batch).issues.isEmpty)
+        var boundByCaller = row; boundByCaller.removeValue(forKey: "tono")
+        #expect(try XPostSemanticAuditPolicy.extract(json(boundByCaller), batch: batch).issues.isEmpty)
+        let multiple = XPostCopyBatch(copies: [.impactful: copy, .technical: copy], context: context)
+        #expect(throws: XPostSemanticAuditPolicy.AuditError.malformed) { try XPostSemanticAuditPolicy.extract(json(boundByCaller), batch: multiple) }
         for (key, value) in [("gancho_estado", "Personaliza la edición de texto." as Any), ("tono", "calm" as Any), ("otra", "aprobado" as Any), ("gancho_apoyos", [true] as Any), ("gancho_apoyos", [0.5] as Any), ("gancho_apoyos", ["0"] as Any)] {
             var invalid = row; invalid[key] = value
             #expect(throws: XPostSemanticAuditPolicy.AuditError.malformed) { try XPostSemanticAuditPolicy.extract(json(invalid), batch: batch) }
