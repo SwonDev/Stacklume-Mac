@@ -1414,8 +1414,11 @@ final class LiquidConversation {
             shouldRememberExchange = pendingConfirmation == nil && researchAnswerPassedReview
         } catch is LiquidLoopError {
             outcome = .toolLimit
-            // Se cortó por exceso de acciones: muestra lo que haya o un aviso.
-            if messages.indices.contains(i), messages[i].text.isEmpty {
+            guard isCurrent(ticket), !Task.isCancelled, messages.indices.contains(i) else { return }
+            if reviewedAdvice, pendingConfirmation == nil,
+               let recovery = AssistantResearchAnswer.researchRecovery(plan: researchPlan, sources: turnSources.sources, spanish: isSpanish) {
+                messages[i].text = recovery
+            } else if messages[i].text.isEmpty {
                 messages[i].text = isSpanish
                     ? "He realizado varias acciones. Vuelve a preguntarme para continuar."
                     : "I performed several actions. Ask me again to continue."

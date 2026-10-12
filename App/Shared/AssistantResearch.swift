@@ -1556,7 +1556,7 @@ enum AssistantResearchAnswer {
         return .init(text: remaining.isEmpty ? corrected : recovery, sources: sources, issues: remaining, rounds: 1, generatedCharacters: corrected.count)
     }
 
-    private static func researchRecovery(plan: AssistantResearchPlan, sources: [String: AssistantResearchSource], spanish: Bool) -> String? {
+    static func researchRecovery(plan: AssistantResearchPlan, sources: [String: AssistantResearchSource], spanish: Bool) -> String? {
         let topic = AssistantResearchPlan.lexicalTopic(for: AssistantActionPolicy.publicWebContext(plan.contextRequest))
         let candidates = sources.compactMap { id, source -> (id: String, source: AssistantResearchSource, score: Int)? in
             guard let score = topic.score(in: source.title + " " + source.summary) else { return nil }
