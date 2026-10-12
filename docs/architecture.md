@@ -49,12 +49,14 @@ SwiftUI compone las vistas y AppKit resuelve superficies donde se necesita contr
 
 | Componente | Función |
 |---|---|
-| `LocalAIRunner` | Carga y ejecución de `LiquidAI/LFM2.5-8B-A1B-MLX-8bit` con MLX. |
+| `LocalAIRunner` | Selección y ejecución de MiMo, Ornith y LFM con MLX, con presupuesto de memoria y reserva durante cada petición. |
 | `UnifiedAIService` | Enriquecimiento con el motor elegido: Liquid o Apple Foundation Models. |
 | `LiquidConversation` | Sesiones, continuidad, generación, cancelación y coordinación de herramientas. |
 | `LibraryAgentTools` | Operaciones sobre la biblioteca y lectura de fuentes. |
 | `AssistantActionPolicy` | Selección de capacidades y política de acciones. |
 | `AssistantConversationStore` | Historial local acotado, con escritura privada y recuperación. |
+| `AssistantChatImageStore` | JPEG privados por UUID, conservados mientras el historial o su respaldo los referencien. |
+| `LocalVisionModelFactory` | Procesamiento de imágenes Qwen3VL, incluida la resolución de metadatos incompletos de MiMo. |
 | `EmbeddingGemmaRuntime` | Proceso privado y runtime portable de la búsqueda multimodal. |
 | `MultimodalSearchService` | Consulta del índice y conexión con los resultados de la biblioteca. |
 

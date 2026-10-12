@@ -58,13 +58,14 @@ enum CoverImage {
         _ data: Data,
         maximumInputBytes: Int = 32 * 1_024 * 1_024,
         maxDimension: CGFloat = 800,
-        quality: CGFloat = 0.8
+        quality: CGFloat = 0.8,
+        minimumDimension: Int = 0
     ) -> Data? {
         guard let thumbnail = thumbnail(
             from: data,
             maximumInputBytes: maximumInputBytes,
             maxDimension: maxDimension
-        ) else { return nil }
+        ), min(thumbnail.width, thumbnail.height) >= minimumDimension else { return nil }
 
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(

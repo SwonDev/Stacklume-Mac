@@ -540,3 +540,9 @@ distinta entre filtros, resultados y ficha, y movimiento limitado a estados de i
 La sección Asistente IA ocupa el espacio ampliado de trabajo como los catálogos: sus fuentes y acciones se presentan en el propio chat, por lo que no reserva una columna vacía de detalle de enlaces. Al regresar a la biblioteca se restaura su disposición de tres columnas. Los mensajes conservan sus límites de anchura y el historial nativo se ajusta al espacio disponible.
 
 «Previsualizar» abre la ficha existente de Descubrir en una hoja tematizada con un cierre explícito. La hoja permite consultar la portada, los metadatos y las acciones de esa fuente sin reducir permanentemente el espacio del asistente ni cambiar la selección de la biblioteca.
+
+## Selección local y adjuntos del asistente · 1.63
+
+- Ajustes → IA reutiliza el panel existente para elegir MiMo, Ornith o LFM. El cambio libera pesos y conserva datos y descargas; está bloqueado durante una petición.
+- Adjuntar imagen es una acción opcional del compositor, disponible con un modelo visual. Se muestra una miniatura local con acción para retirarla antes de enviar. El transcript conserva su disposición nativa; no se modifica la sidebar.
+- El adjunto permanece asociado al turno al regenerar y recuperar el historial. Si se selecciona LFM, se pide elegir un modelo visual antes de regenerar esa pregunta.

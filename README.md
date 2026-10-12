@@ -48,7 +48,15 @@ La distribución utiliza firma ad hoc y no está notarizada por Apple. macOS pue
 
 ## IA en tu Mac
 
-El asistente Liquid utiliza `LiquidAI/LFM2.5-8B-A1B-MLX-8bit` mediante MLX. El enriquecimiento también permite elegir Apple Foundation Models cuando esté disponible en el sistema. La elección del motor se conserva en los ajustes.
+El modelo local recomendado es **MiMo V2.6 Distill 9B**, multimodal a 4 bits mediante MLX. Puedes adjuntar imágenes al chat y elegir MiMo, Ornith 1.5 9B o LFM2.5 en Ajustes → IA. El mismo modelo local se utiliza en el chat, los borradores para X y el enriquecimiento; este último también permite elegir Apple Foundation Models cuando esté disponible. Una selección explícita se conserva al actualizar. El razonamiento permanece activado en las tareas del modelo local, con espacio reservado para la respuesta; el proceso interno no se guarda en el historial.
+
+| Modelo local | Descarga aproximada | Entradas |
+|---|---:|---|
+| MiMo V2.6 Distill 9B · recomendado | 5,95 GB | Texto e imágenes |
+| Ornith 1.5 9B | 6,51 GB | Texto e imágenes |
+| LFM2.5-8B-A1B | 9 GB | Texto |
+
+Los modelos visuales requieren un Mac de al menos 16 GB. Stacklume limita su contexto a 8k tokens en esa clase de memoria y adapta la carga a la presión del sistema. La comparación nativa se realizó en un Mac de 24 GB; el consumo depende del contexto y de las imágenes, además de los pesos.
 
 La búsqueda utiliza `google/embeddinggemma-2`, con pesos `mlx-community/embeddinggemma-2-bf16` y revisión fijada. Stacklume incluye su runtime: para usar la app no necesitas instalar Python ni un servidor de embeddings. Los pesos de los modelos se descargan cuando hacen falta y su carga depende de la memoria disponible.
 

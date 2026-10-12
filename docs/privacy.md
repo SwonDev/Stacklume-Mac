@@ -54,3 +54,5 @@ Consulta el alcance de cada acción de borrado antes de confirmarla. Las copias 
 Antes de compartir un log, una captura o una reproducción, retira URL privadas, contenido de conversaciones, nombres de archivos, rutas de usuario y credenciales. Usa datos sintéticos en las issues públicas. La [guía de contribución](../CONTRIBUTING.md) explica cómo comprobar cambios sin usar tu biblioteca habitual.
 
 La [política de la web](https://stacklume.app/privacy) describe sus propios servicios. La descarga gratuita de la aplicación para Mac no requiere registrarse ni facilitar datos de pago.
+
+Las imágenes adjuntas al chat se reducen y guardan como JPEG privados junto al historial local. Se procesan con el modelo visual elegido en el Mac; adjuntarlas no las envía a la búsqueda web. Al eliminar el historial se purgan los adjuntos que ya no referencia el historial ni su copia de recuperación. La exportación de la biblioteca no incluye las conversaciones ni esas imágenes.

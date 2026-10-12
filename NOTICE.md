@@ -31,6 +31,8 @@ El runtime de búsqueda utiliza Python y las dependencias declaradas en `Runtime
 
 Los pesos de los modelos no están incluidos en el código fuente de Stacklume. Consulta sus condiciones en los repositorios de origen antes de redistribuirlos:
 
+- [XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B), con [conversión MLX de nativ-community](https://huggingface.co/nativ-community/MiMo-V2.6-Distill-Qwen-9B-MLX-4bit).
+- [ornith-ai/Ornith-1.5-9B](https://huggingface.co/ornith-ai/Ornith-1.5-9B), con [conversión visual MLX de Shiftedx](https://huggingface.co/Shiftedx/ornith-1.5-9b-affine4-vision-mlx).
 - [LiquidAI/LFM2.5-8B-A1B-MLX-8bit](https://huggingface.co/LiquidAI/LFM2.5-8B-A1B-MLX-8bit).
 - [google/embeddinggemma-2](https://huggingface.co/google/embeddinggemma-2).
 - [mlx-community/embeddinggemma-2-bf16](https://huggingface.co/mlx-community/embeddinggemma-2-bf16).
